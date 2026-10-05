@@ -89,7 +89,9 @@ namespace libomtnet.linux
             client = AvahiClient.avahi_client_new(poll, 0, Marshal.GetFunctionPointerForDelegate(clientCallback), IntPtr.Zero, ref hr);
             if (client == IntPtr.Zero)
             {
+                //No avahi-daemon: discovery is off, omt:// URLs still work. Creating a browser on a NULL client aborts the process.
                 OMTLogging.Write("Failure creating client: " + hr, "OMTDiscoveryAvahi");
+                return;
             }
             browser = AvahiClient.avahi_service_browser_new(client, AvahiClient.AVAHI_IF_UNSPEC, AvahiClient.AVAHI_PROTO_UNSPEC
                 , serviceType, IntPtr.Zero, 0, Marshal.GetFunctionPointerForDelegate(serviceBrowserCallback), IntPtr.Zero);
@@ -200,7 +202,7 @@ namespace libomtnet.linux
             lock (lockSync)
             {
                 OMTDiscoveryEntry entry = GetEntry(address);
-                if (entry == null)
+                if (entry == null && client != IntPtr.Zero)
                 {
                     EntryAvahi ctx = new EntryAvahi(address);
                     ctx.Group = AvahiClient.avahi_entry_group_new(client, Marshal.GetFunctionPointerForDelegate(entryGroupCallback), IntPtr.Zero);

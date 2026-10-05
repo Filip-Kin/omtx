@@ -20,7 +20,9 @@ internal static class PlayCmd
             "medium" => OMTQuality.Medium,
             _ => OMTQuality.High,
         };
-        bool noAudio = a.Has("--no-audio");
+        // Video only by default: the lowest latency, see VideoPts below. --audio plays sound with
+        // ffplay's audio clock as master, which keeps whatever delay builds up at startup.
+        bool noAudio = !a.Has("--audio");
         bool stats = a.Has("--stats");
         string window = a.Get("--window");
         string ffplay = a.Get("--ffplay", "ffplay");
@@ -36,6 +38,7 @@ internal static class PlayCmd
         int audioRate = 0, audioChannels = 0;     // format declared to the running player
         int seenRate = 0, seenChannels = 0;       // latest format seen on the wire
         long t0 = 0;
+        var arrival = new Stopwatch();
         byte[] video = new byte[1 << 20];
         float[] planar = new float[0];
         byte[] interleaved = new byte[0];
@@ -113,12 +116,13 @@ internal static class PlayCmd
                     player = StartPlayer(ffplay, window, audioRate > 0, $"omtx {a.Positional[0]}");
                     mkv = new MkvWriter(player.StandardInput.BaseStream, hevc, width, height, audioRate, audioChannels);
                     t0 = frame.Timestamp;
+                    arrival.Restart();
                 }
 
                 int len = frame.DataLength;
                 if (video.Length < len) video = new byte[len * 2];
                 Marshal.Copy(frame.Data, video, 0, len);
-                long ms = (frame.Timestamp - t0) / 10000;
+                long ms = noAudio ? VideoPts(arrival) : (frame.Timestamp - t0) / 10000;
                 Write(() => mkv.WriteVideo(ms, video, len, key));
                 statFrames++; statBytes += len;
 
@@ -144,11 +148,22 @@ internal static class PlayCmd
         }
     }
 
+    /// <summary>
+    /// Video-only timestamps: arrival time, running 10% fast. ffplay (video clock master) shows a
+    /// frame once its timestamp is due, so frames that queue up while ffplay starts, or that arrive
+    /// in a burst after a Wi-Fi stall, are already due and go out at once; steady frames are shown
+    /// on arrival. With the sender's own timestamps that queue would play at normal speed for ever
+    /// and every stall would add to the delay for good.
+    /// </summary>
+    static long VideoPts(Stopwatch arrival) => (long)(arrival.Elapsed.TotalMilliseconds * 0.9);
+
     static Process StartPlayer(string ffplay, string window, bool audio, string title)
     {
         var args = new List<string> {
+            // No "-fflags nobuffer": it discards the packets read while probing, and the first one is
+            // the only keyframe (omtx sends keyframes on request), so the picture would stay black.
             "-hide_banner", "-loglevel", "error", "-nostats",
-            "-fflags", "nobuffer", "-flags", "low_delay", "-framedrop",
+            "-flags", "low_delay", "-framedrop",
             "-probesize", "32", "-analyzeduration", "0",
             "-sync", audio ? "audio" : "video",
             "-window_title", title,

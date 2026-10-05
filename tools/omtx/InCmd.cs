@@ -59,7 +59,7 @@ internal static class InCmd
     static void Bridge(string source, string decoderList, bool stats)
     {
         // "PIXEL-9 (Camera)" is republished as "<this PC> (PIXEL-9 Camera)"
-        string name = source;
+        string name = "omtx camera";
         int open = source.IndexOf('(');
         if (open > 0 && source.EndsWith(")"))
             name = source.Substring(0, open).Trim() + " " + source.Substring(open + 1, source.Length - open - 2);

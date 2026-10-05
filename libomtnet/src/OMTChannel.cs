@@ -64,6 +64,7 @@ namespace libomtnet
         private bool receiveNeedsKeyframe = true;
         private int sendPoolCount = 0;
         private long congestionDrops = 0;
+        private bool lowLatencySocket = false;
 
         public delegate void ChangedEventHandler(object sender, OMTEventArgs e);
         public event ChangedEventHandler Changed;
@@ -161,6 +162,30 @@ namespace libomtnet
             return codec == (int)OMTCodec.H264 || codec == (int)OMTCodec.HEVC;
         }
 
+        /// <summary>
+        /// omtx: keep the kernel from queueing much video. Send completions only see congestion once
+        /// the socket buffer is full, and at a few Mbit/s the default 64 KB (128 KB on Linux) is a
+        /// quarter of a second of picture. Small buffers make the 4-frame send pool fill, and the
+        /// drop/keyframe/bitrate logic act, within a frame or two of the link slowing down.
+        /// </summary>
+        private void SetLowLatencySocket()
+        {
+            lowLatencySocket = true;
+            try
+            {
+                socket.SendBufferSize = OMTConstants.NETWORK_SEND_BUFFER_INTERFRAME;
+                if (OMTPlatform.GetPlatformType() == OMTPlatformType.Linux)
+                {
+                    //TCP_NOTSENT_LOWAT = 25: cap bytes not yet sent, independent of what is unacknowledged
+                    socket.SetSocketOption(SocketOptionLevel.Tcp, (SocketOptionName)25, OMTConstants.NETWORK_NOTSENT_LOWAT);
+                }
+            }
+            catch (Exception ex)
+            {
+                OMTLogging.Write(ex.ToString(), "OMTChannel.SetLowLatencySocket");
+            }
+        }
+
         private void RaiseKeyframeRequested()
         {
             //Own args object: the shared tempEvent can be in use on the receive thread.
@@ -237,6 +262,10 @@ namespace libomtnet
                         {
                             return 0;
                         }
+                    }
+                    if (interFrame && !lowLatencySocket)
+                    {
+                        SetLowLatencySocket();
                     }
                     frame.SetPreviewMode(preview && !interFrame);
                     int length = frame.Length;

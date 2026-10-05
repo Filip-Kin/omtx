@@ -36,6 +36,9 @@ namespace libomtnet
     internal class OMTConstants
     {
         public static int NETWORK_SEND_BUFFER = 65536;
+        //omtx: send buffer for connections carrying H264/HEVC, see OMTChannel.SetLowLatencySocket
+        public static int NETWORK_SEND_BUFFER_INTERFRAME = 32768;
+        public static int NETWORK_NOTSENT_LOWAT = 16384;
         public static int NETWORK_SEND_RECEIVE_BUFFER = 65536;
         public static int NETWORK_RECEIVE_BUFFER = 1048576 * 8; //8MB is a safe maximum for MacOS platforms
 

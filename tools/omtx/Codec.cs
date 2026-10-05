@@ -4,7 +4,9 @@ namespace Omtx;
 
 /// <summary>
 /// Low-latency H.264/HEVC encoder over libavcodec: no B-frames, CBR with a short VBV,
-/// keyframes on demand, bitrate changes without a restart.
+/// keyframes only on demand (no GOP timer, no scene-cut IDRs: each would be a burst into the
+/// Wi-Fi link), bitrate changes without a restart. The one-frame VBV also caps a requested IDR at
+/// about one frame's budget, so it does not burst either.
 /// </summary>
 internal sealed unsafe class VideoEncoder : IDisposable
 {
@@ -17,13 +19,15 @@ internal sealed unsafe class VideoEncoder : IDisposable
     private long pts;
     private long bitrate;
     private readonly double vbvFrames;
+    private readonly bool bt601;
     private readonly Queue<long> timestamps = new Queue<long>();
     private byte[] outBuf = new byte[1 << 20];
 
     /// <param name="encoders">Names to try in order, e.g. h264_nvenc then libx264.</param>
     public VideoEncoder(IEnumerable<string> encoders, bool hevc, int width, int height, int fpsN, int fpsD,
-                        long bitrate, bool intraRefresh, double vbvFrames)
+                        long bitrate, bool intraRefresh, double vbvFrames, bool bt601 = false)
     {
+        this.bt601 = bt601;
         Hevc = hevc; Width = width; Height = height; FpsN = fpsN; FpsD = fpsD;
         this.bitrate = bitrate; this.vbvFrames = vbvFrames;
         encFmt = Av.PixFmt("nv12");
@@ -57,6 +61,12 @@ internal sealed unsafe class VideoEncoder : IDisposable
         Must(Av.OptSetQ(ctx, "time_base", FpsD, FpsN), "time_base");
         Av.OptSetQ(ctx, "framerate", FpsN, FpsD); // not an option in every FFmpeg; time_base covers it
         Av.OptSetInt(ctx, "bf", 0);
+        // Colour tags in the stream (VUI), so every decoder picks the same matrix
+        string cs = bt601 ? "smpte170m" : "bt709";
+        Av.OptSet(ctx, "colorspace", cs);
+        Av.OptSet(ctx, "color_primaries", cs);
+        Av.OptSet(ctx, "color_trc", cs);
+        Av.OptSet(ctx, "color_range", "tv");
         Av.OptSetInt(ctx, "g", Math.Max(1, FpsN / Math.Max(1, FpsD)) * 600); // keyframes on demand, not on a timer
         SetRate(bitrate);
 
@@ -68,6 +78,7 @@ internal sealed unsafe class VideoEncoder : IDisposable
             Av.OptSetInt(ctx, "zerolatency", 1);
             Av.OptSetInt(ctx, "delay", 0);
             Av.OptSetInt(ctx, "forced-idr", 1);
+            Av.OptSetInt(ctx, "no-scenecut", 1);
             if (intraRefresh) Av.OptSetInt(ctx, "intra-refresh", 1);
         }
         else if (name == "libx264" || name == "libx265")
@@ -75,6 +86,7 @@ internal sealed unsafe class VideoEncoder : IDisposable
             Av.OptSet(ctx, "preset", name == "libx264" ? "veryfast" : "ultrafast");
             Av.OptSet(ctx, "tune", "zerolatency");
             Av.OptSetInt(ctx, "forced-idr", 1);
+            Av.OptSet(ctx, name == "libx264" ? "x264-params" : "x265-params", "scenecut=0");
             if (intraRefresh && name == "libx264") Av.OptSetInt(ctx, "intra-refresh", 1);
             Av.OptSetInt(ctx, "threads", 0);
         }

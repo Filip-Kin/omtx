@@ -15,6 +15,7 @@ internal static class BarsCmd
         int w = int.Parse(size[0]), h = int.Parse(size[1]);
         int fps = a.Int("--fps", 30);
         bool omtx = a.Has("--omtx");
+        bool noise = a.Has("--noise");
         string name = a.Get("--name", omtx ? "Bars omtx" : "Bars");
 
         using var send = omtx ? new OMTSend(name, OMTQuality.Default, OMTAddress.SERVICE_TYPE_OMTX) : new OMTSend(name, OMTQuality.Default);
@@ -23,11 +24,12 @@ internal static class BarsCmd
         VideoEncoder enc = null;
         AnnexB annexB = null;
         RateControl rc = null;
+        var sent = new RateMeter();
         if (omtx)
         {
             Av.Load(a.Get("--ffmpeg"));
             rc = new RateControl(3_000_000, a.Int("--bitrate", 10000) * 1000L, a.Int("--bitrate", 10000) * 1000L);
-            enc = new VideoEncoder(a.List("--encoder", "libx264"), false, w, h, fps, 1, rc.Current, true, 1.0);
+            enc = new VideoEncoder(a.List("--encoder", "libx264"), false, w, h, fps, 1, rc.Current, false, 1.0);
             annexB = new AnnexB(false);
             Console.Error.WriteLine("omtx bars: encoder " + enc.Name);
         }
@@ -46,7 +48,7 @@ internal static class BarsCmd
         {
             while (Program.Running)
             {
-                Draw(pic, w, h, stride, n);
+                Draw(pic, w, h, stride, n, noise);
 
                 if (send.Connections > 0)
                 {
@@ -75,18 +77,19 @@ internal static class BarsCmd
                 else
                 {
                     if (send.Connections == 0) { Thread.Sleep(1000 / fps); n++; continue; }
-                    if (rc.Update(send.GetCongestionDrops(), send.GetMaxVideoFramesInFlight(), send.ReceiverSuggestedQuality)) enc.SetRate(rc.Current);
+                    if (rc.Update(send.GetCongestionDrops(), send.GetMaxVideoFramesInFlight(), send.ReceiverSuggestedQuality, sent.BitsPerSecond)) enc.SetRate(rc.Current);
                     bool force = send.ConsumeKeyframeRequest();
                     enc.Encode(pic, stride, w, h, Av.PixFmt("uyvy422"), -1, force, (buf, len, key, ts) =>
                     {
                         byte[] au = annexB.Process(buf, len, out bool keyNal);
+                        sent.Add(au.Length);
                         var handle = GCHandle.Alloc(au, GCHandleType.Pinned);
                         try
                         {
                             outFrame.Type = OMTFrameType.Video; outFrame.Codec = (int)OMTCodec.H264; outFrame.Timestamp = -1;
                             outFrame.Width = w; outFrame.Height = h; outFrame.FrameRateN = fps; outFrame.FrameRateD = 1;
                             outFrame.AspectRatio = (float)w / h; outFrame.ColorSpace = OMTColorSpace.BT709;
-                            outFrame.Flags = key || keyNal ? OMTVideoFlags.Keyframe : OMTVideoFlags.None;
+                            outFrame.Flags = keyNal ? OMTVideoFlags.Keyframe : OMTVideoFlags.None;
                             outFrame.Data = handle.AddrOfPinnedObject(); outFrame.DataLength = au.Length;
                             send.Send(outFrame);
                         }
@@ -105,18 +108,22 @@ internal static class BarsCmd
         return 0;
     }
 
-    // 75% bars (UYVY, BT.709), a white box moving left to right, and a frame counter strip
+    // 75% bars (UYVY, BT.709), a white box moving left to right, and a bottom strip holding the
+    // low 16 bits of the monotonic clock in ms (bit 15 on the left), for glass-to-glass latency checks
     static readonly (byte y, byte u, byte v)[] Bars =
     {
         (180, 128, 128), (168, 44, 136), (145, 147, 44), (133, 63, 52),
         (63, 193, 204), (51, 109, 212), (28, 212, 120), (16, 128, 128),
     };
 
-    static unsafe void Draw(IntPtr pic, int w, int h, int stride, long n)
+    static ulong rng = 0x9E3779B97F4A7C15;
+
+    static unsafe void Draw(IntPtr pic, int w, int h, int stride, long n, bool noise)
     {
         byte* p = (byte*)pic;
         int box = h / 6;
         int bx = (int)(n * 8 % Math.Max(1, w - box)) & ~1;
+        long clock = Environment.TickCount64 & 0xFFFF;
         int by = h / 2 - box / 2;
         for (int y = 0; y < h; y++)
         {
@@ -125,8 +132,18 @@ internal static class BarsCmd
             {
                 var c = Bars[Math.Min(7, x * 8 / w)];
                 if (x >= bx && x < bx + box && y >= by && y < by + box) c = (235, 128, 128);
-                if (y >= h - h / 12) c = ((n >> (x * 16 / w)) & 1) == 1 ? ((byte)235, (byte)128, (byte)128) : ((byte)16, (byte)128, (byte)128);
+                if (y >= h - h / 12) c = ((clock >> (15 - x * 16 / w)) & 1) == 1 ? ((byte)235, (byte)128, (byte)128) : ((byte)16, (byte)128, (byte)128);
                 row[x * 2] = c.u; row[x * 2 + 1] = c.y; row[x * 2 + 2] = c.v; row[x * 2 + 3] = c.y;
+            }
+            if (noise && y < h / 3)
+            {
+                // worst case for an encoder: fresh noise in the top third of every frame
+                ulong* q = (ulong*)row;
+                for (int i = 0; i < stride / 8; i++)
+                {
+                    rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
+                    q[i] = rng;
+                }
             }
         }
     }

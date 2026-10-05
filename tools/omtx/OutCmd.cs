@@ -11,25 +11,27 @@ internal static class OutCmd
 {
     public static int Run(Args a)
     {
-        if (a.Positional.Count < 1) return Program.Fail("omtx out: source missing (see omtx list)");
         Av.Load(a.Get("--ffmpeg"));
-        string source = Program.NormaliseAddress(a.Positional[0]);
+        string sourceName = a.Positional.Count > 0 ? a.Positional[0] : PickLocalSource();
+        if (sourceName == null) return 0;
+        string source = Program.NormaliseAddress(sourceName);
         bool hevc = a.Get("--codec", "h264").ToLowerInvariant() is "hevc" or "h265";
         string[] encoders = a.List("--encoder", hevc ? "hevc_nvenc,hevc_qsv,hevc_amf,libx265" : "h264_nvenc,h264_qsv,h264_amf,libx264");
         long ceiling = a.Int("--bitrate", 10000) * 1000L;
         long floor = Math.Min(ceiling, a.Int("--min", 3000) * 1000L);
-        bool intraRefresh = !a.Has("--no-intra-refresh");
+        bool intraRefresh = a.Has("--intra-refresh");
         double vbv = a.Dbl("--vbv", 1.0);
         bool stats = a.Has("--stats");
-        string name = a.Get("--name") ?? DefaultName(a.Positional[0]);
+        string name = a.Get("--name") ?? DefaultName(sourceName);
 
         using var recv = new OMTReceive(source, OMTFrameType.Video | OMTFrameType.Audio, OMTPreferredVideoFormat.UYVYorBGRA, OMTReceiveFlags.None);
         using var send = new OMTSend(name, OMTQuality.Default, OMTAddress.SERVICE_TYPE_OMTX);
         send.SetSenderInformation(new OMTSenderInfo("omtx out", "omtx", Program.Version));
-        Console.Error.WriteLine($"omtx out: {a.Positional[0]} -> \"{name}\" ({OMTAddress.SERVICE_TYPE_OMTX}, {(hevc ? "HEVC" : "H.264")})");
+        Console.Error.WriteLine($"omtx out: {sourceName} -> \"{name}\" ({OMTAddress.SERVICE_TYPE_OMTX}, {(hevc ? "HEVC" : "H.264")})");
 
         var rc = new RateControl(floor, ceiling, ceiling);
         var annexB = new AnnexB(hevc);
+        var sent = new RateMeter();
         VideoEncoder enc = null;
         var frame = new OMTMediaFrame();
         var outFrame = new OMTMediaFrame();
@@ -43,7 +45,15 @@ internal static class OutCmd
         {
             while (Program.Running)
             {
-                if (!recv.Receive(OMTFrameType.Video | OMTFrameType.Audio, 200, ref frame)) continue;
+                if (!recv.Receive(OMTFrameType.Video | OMTFrameType.Audio, 200, ref frame))
+                {
+                    if (enc == null && statTimer.ElapsedMilliseconds >= 10000)
+                    {
+                        Console.Error.WriteLine($"omtx out: no video from {sourceName} yet");
+                        statTimer.Restart();
+                    }
+                    continue;
+                }
                 if (frame.Type == OMTFrameType.Audio)
                 {
                     if (send.Connections > 0) send.Send(frame);
@@ -64,14 +74,15 @@ internal static class OutCmd
                     enc?.Dispose();
                     srcFpsN = frame.FrameRateN > 0 ? frame.FrameRateN : 30;
                     srcFpsD = frame.FrameRateD > 0 ? frame.FrameRateD : 1;
-                    enc = new VideoEncoder(encoders, hevc, frame.Width, frame.Height, srcFpsN, srcFpsD, rc.Current, intraRefresh, vbv);
+                    enc = new VideoEncoder(encoders, hevc, frame.Width, frame.Height, srcFpsN, srcFpsD, rc.Current, intraRefresh, vbv,
+                                           frame.ColorSpace == OMTColorSpace.BT601 || (frame.ColorSpace == OMTColorSpace.Undefined && frame.Height < 720));
                     Console.Error.WriteLine($"omtx out: {enc.Name} {frame.Width}x{frame.Height} {srcFpsN}/{srcFpsD} {rc.Current / 1000} kbps");
                     send.ConsumeKeyframeRequest();
                     aspect = frame.AspectRatio > 0 ? frame.AspectRatio : (float)frame.Width / frame.Height;
                     colorSpace = frame.ColorSpace == OMTColorSpace.BT601 ? OMTColorSpace.BT601 : OMTColorSpace.BT709;
                 }
 
-                if (rc.Update(send.GetCongestionDrops(), send.GetMaxVideoFramesInFlight(), send.ReceiverSuggestedQuality))
+                if (rc.Update(send.GetCongestionDrops(), send.GetMaxVideoFramesInFlight(), send.ReceiverSuggestedQuality, sent.BitsPerSecond))
                 {
                     enc.SetRate(rc.Current);
                     if (stats) Console.Error.WriteLine($"[out] bitrate {rc.Current / 1000} kbps");
@@ -81,8 +92,10 @@ internal static class OutCmd
                 int w = frame.Width, h = frame.Height;
                 enc.Encode(frame.Data, frame.Stride, w, h, fmt, frame.Timestamp, force, (buf, len, key, ts) =>
                 {
-                    byte[] au = annexB.Process(buf, len, out bool hasKeyNal);
-                    bool isKey = key || hasKeyNal;
+                    // Keyframe = an IDR/IRAP NAL is present. The packet key flag is not enough: x264 with
+                    // intra refresh sets it on recovery-point frames, which a decoder cannot start on.
+                    byte[] au = annexB.Process(buf, len, out bool isKey);
+                    sent.Add(au.Length);
                     var handle = GCHandle.Alloc(au, GCHandleType.Pinned);
                     try
                     {
@@ -119,11 +132,41 @@ internal static class OutCmd
         return 0;
     }
 
+    /// <summary>
+    /// No source given: wait for stock OMT sources on this PC and take the vMix one
+    /// (preferring Output 1), or the only one there is.
+    /// </summary>
+    static string PickLocalSource()
+    {
+        var discovery = OMTDiscovery.GetInstance();
+        string machine = OMTAddress.SanitizeName(Environment.MachineName);
+        var said = DateTime.MinValue;
+        while (Program.Running)
+        {
+            var local = discovery.GetSources()
+                .Where(s => s.ServiceType == OMTAddress.SERVICE_TYPE_OMT && string.Equals(s.MachineName, machine, StringComparison.OrdinalIgnoreCase))
+                .Select(s => s.ToString()).OrderBy(s => s).ToList();
+            string pick = local.FirstOrDefault(s => s.Contains("vMix", StringComparison.OrdinalIgnoreCase) && s.Contains("Output 1", StringComparison.OrdinalIgnoreCase))
+                       ?? local.FirstOrDefault(s => s.Contains("vMix", StringComparison.OrdinalIgnoreCase))
+                       ?? (local.Count == 1 ? local[0] : null);
+            if (pick != null) return pick;
+            if (DateTime.UtcNow - said > TimeSpan.FromSeconds(10))
+            {
+                Console.Error.WriteLine(local.Count == 0
+                    ? "omtx out: waiting for an OMT source on this PC (vMix: Settings > Outputs / NDI / SRT > OMT)"
+                    : "omtx out: several OMT sources on this PC, name one: " + string.Join(", ", local.Select(s => $"\"{s}\"")));
+                said = DateTime.UtcNow;
+            }
+            Thread.Sleep(500);
+        }
+        return null;
+    }
+
     /// <summary>"FIMVIDEO3 (vMix - Output 1)" -> "vMix - Output 1 omtx". The machine name is added by OMT.</summary>
     static string DefaultName(string source)
     {
         int open = source.IndexOf('('), close = source.LastIndexOf(')');
-        string inner = open >= 0 && close > open ? source.Substring(open + 1, close - open - 1) : source;
-        return inner + " omtx";
+        if (open < 0 || close < open) return "omtx"; // a URL has no name to keep
+        return source.Substring(open + 1, close - open - 1) + " omtx";
     }
 }

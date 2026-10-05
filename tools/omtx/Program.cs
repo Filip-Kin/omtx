@@ -12,21 +12,24 @@ internal static class Program
   omtx list [--seconds N]
       Sources on the network, both stock OMT (_omt._tcp) and omtx (_omtx._tcp).
 
-  omtx play <source> [high|medium|low] [--window WxH+X+Y] [--no-audio] [--ffplay PATH] [--stats]
+  omtx play <source> [high|medium|low] [--window WxH+X+Y] [--audio] [--ffplay PATH] [--stats]
       Receive an omtx source and play it fullscreen in ffplay (window mode with --window).
+      Video only unless --audio (audio uses ffplay's audio clock and costs latency).
       <source> is a name ""HOST (Name)"", omtx://host:port or host:port.
 
-  omtx out <stock OMT source> [--name NAME] [--codec h264|hevc] [--bitrate KBPS] [--min KBPS]
-           [--encoder LIST] [--no-intra-refresh] [--vbv FRAMES] [--ffmpeg DIR] [--stats]
-      Re-encode a stock OMT source (e.g. a vMix output) as omtx. Default encoders tried in order:
+  omtx out [<stock OMT source>] [--name NAME] [--codec h264|hevc] [--bitrate KBPS] [--min KBPS]
+           [--encoder LIST] [--intra-refresh] [--vbv FRAMES] [--ffmpeg DIR] [--stats]
+      Re-encode a stock OMT source (e.g. a vMix output) as omtx. With no source, takes this PC's
+      vMix OMT output (Output 1 first). Default encoders tried in order:
       h264_nvenc, h264_qsv, h264_amf, libx264. Default 10000 kbps ceiling, 3000 kbps floor.
 
   omtx in [<omtx source> ...] [--decoder LIST] [--ffmpeg DIR] [--stats]
       Decode omtx sources (e.g. phones) and republish each as a stock OMT source for vMix/OBS.
       With no source given, bridges every omtx source that appears on the network.
 
-  omtx bars [--name NAME] [--size WxH] [--fps N] [--omtx] [--encoder LIST] [--ffmpeg DIR]
-      Test pattern with a tone. Stock OMT (VMX) by default, omtx H.264 with --omtx.
+  omtx bars [--name NAME] [--size WxH] [--fps N] [--omtx] [--noise] [--encoder LIST] [--ffmpeg DIR]
+      Test pattern with a tone. Stock OMT (VMX) by default, omtx H.264 with --omtx. The bottom
+      strip is the monotonic clock in ms (16 bits) for latency checks; --noise fills the top third.
 ";
 
     static int Main(string[] args)
@@ -85,7 +88,7 @@ internal sealed class Args
 {
     public readonly List<string> Positional = new();
     private readonly Dictionary<string, string> named = new();
-    private static readonly HashSet<string> Flags = new() { "--stats", "--no-audio", "--omtx", "--no-intra-refresh" };
+    private static readonly HashSet<string> Flags = new() { "--stats", "--no-audio", "--omtx", "--intra-refresh", "--noise", "--audio" };
 
     public Args(string[] a)
     {

@@ -3,9 +3,10 @@ using libomtnet;
 namespace Omtx;
 
 /// <summary>
-/// Bitrate follows backpressure (spec section 4.3): step down 20% on a congestion drop with a
-/// 1 s hold, step up 5% after 2 s clean with at most one frame in flight. The ceiling is the
-/// configured maximum, capped by the highest quality any receiver suggested (section 4.5).
+/// Bitrate follows backpressure (spec section 4.3). On a congestion drop the target goes to 80% of
+/// what was actually being sent (not of the old target: an encoder below its target would never
+/// feel a cut), then holds 1 s. After 2 s clean with at most one frame in flight it rises 5%.
+/// The ceiling is the configured maximum, capped by the highest quality a receiver suggested (4.5).
 /// </summary>
 internal sealed class RateControl
 {
@@ -33,7 +34,7 @@ internal sealed class RateControl
     };
 
     /// <summary>Returns true when the target changed.</summary>
-    public bool Update(long drops, int inFlight, OMTQuality suggested)
+    public bool Update(long drops, int inFlight, OMTQuality suggested, long measuredBps)
     {
         var now = DateTime.UtcNow;
         long ceiling = Math.Max(floor, Math.Min(configuredCeiling, CapFor(suggested)));
@@ -46,7 +47,8 @@ internal sealed class RateControl
             cleanSince = now;
             if (now - lastDown >= TimeSpan.FromSeconds(1))
             {
-                current = Math.Max(floor, (long)(current * 0.8));
+                long basis = measuredBps > 0 ? Math.Min(current, measuredBps) : current;
+                current = Math.Max(floor, (long)(basis * 0.8));
                 lastDown = now;
             }
         }
@@ -61,5 +63,30 @@ internal sealed class RateControl
         }
         if (current > ceiling) current = ceiling;
         return current != before;
+    }
+}
+
+/// <summary>Bits sent over the last second.</summary>
+internal sealed class RateMeter
+{
+    private readonly Queue<(long t, int bytes)> window = new();
+    private long total;
+
+    public void Add(int bytes)
+    {
+        long now = Environment.TickCount64;
+        window.Enqueue((now, bytes));
+        total += bytes;
+        Trim(now);
+    }
+
+    public long BitsPerSecond
+    {
+        get { Trim(Environment.TickCount64); return total * 8; }
+    }
+
+    private void Trim(long now)
+    {
+        while (window.Count > 0 && now - window.Peek().t > 1000) total -= window.Dequeue().bytes;
     }
 }
