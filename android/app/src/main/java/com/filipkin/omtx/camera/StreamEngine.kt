@@ -4,7 +4,10 @@ import android.content.Context
 import android.net.wifi.WifiManager
 import android.os.Handler
 import android.os.Looper
+import android.os.ParcelFileDescriptor
 import android.os.SystemClock
+import android.system.Os
+import android.system.OsConstants
 import android.util.Log
 import android.view.Surface
 import com.filipkin.omtx.core.OmtxSender
@@ -92,6 +95,7 @@ class StreamEngine(private val ctx: Context, private val ui: Ui) {
             },
             userCeilingBps = s.maxBitrateBps,
             log = { Log.i(TAG, it) },
+            configureSocket = ::setNotSentLowat,
         )
         try {
             snd.start()
@@ -192,5 +196,19 @@ class StreamEngine(private val ctx: Context, private val ui: Ui) {
         return t
     }
 
-    companion object { private const val TAG = "omtx.engine" }
+    companion object {
+        private const val TAG = "omtx.engine"
+
+        /** TCP_NOTSENT_LOWAT = 16 KB, as the C# fork does on Linux. Best effort. */
+        fun setNotSentLowat(socket: java.net.Socket) {
+            try {
+                ParcelFileDescriptor.fromSocket(socket).use { pfd ->
+                    Os.setsockoptInt(pfd.fileDescriptor, OsConstants.IPPROTO_TCP,
+                        OmtxSender.TCP_NOTSENT_LOWAT, OmtxSender.NOTSENT_LOWAT_BYTES)
+                }
+            } catch (e: Exception) {
+                Log.w(TAG, "TCP_NOTSENT_LOWAT: $e")
+            }
+        }
+    }
 }

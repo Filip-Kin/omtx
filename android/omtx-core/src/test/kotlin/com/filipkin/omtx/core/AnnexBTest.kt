@@ -51,6 +51,16 @@ class AnnexBTest {
     }
 
     @Test
+    fun recoveryPointFrameIsNotAKeyframe() {
+        // SEI recovery point (payload type 6) + non-IDR slice: what intra refresh produces and
+        // some encoders flag as key. Not a join point, gets no parameter sets.
+        val au = sc4(hex("06 06 01 C4 80"), p)
+        val (out, key) = AnnexB.makeSelfContained(au, VideoCodec.H264, sc4(sps, pps))
+        assertFalse(key)
+        assertSame(au, out)
+    }
+
+    @Test
     fun nonKeyframeUntouched() {
         val au = sc4(p)
         val (out, key) = AnnexB.makeSelfContained(au, VideoCodec.H264, sc4(sps, pps))

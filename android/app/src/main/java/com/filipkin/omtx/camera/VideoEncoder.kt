@@ -41,7 +41,7 @@ class VideoEncoder(
         private set
     var encoderName: String = ""
         private set
-    var intraRefresh = false
+    var iFrameInterval = 0
         private set
 
     val mime: String get() = mimeOf(codec)
@@ -52,22 +52,33 @@ class VideoEncoder(
         val caps = info?.getCapabilitiesForType(mime)
         val m = if (info != null) MediaCodec.createByCodecName(info.name) else MediaCodec.createEncoderByType(mime)
         encoderName = m.name
-        intraRefresh = caps?.isFeatureSupported(CodecCapabilities.FEATURE_IntraRefresh) == true
 
-        val full = buildFormat(caps, minimal = false)
-        try {
-            m.configure(full, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-        } catch (e: Exception) {
-            // Some vendor encoders reject optional keys; retry with the bare minimum.
-            Log.w(TAG, "configure with full format failed, retrying minimal: $e")
-            m.reset()
-            intraRefresh = false
-            m.configure(buildFormat(caps, minimal = true), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+        // Keyframes only on demand (new subscriber, drop, OMTKeyframeRequest). Ask for no
+        // periodic sync frames: -1 means "only the first frame" (API 25+); encoders that reject
+        // it get one hour. Intra refresh stays off: joins wait for an IDR anyway.
+        val attempts = listOf(
+            -1 to false, NO_PERIODIC_FALLBACK_S to false, NO_PERIODIC_FALLBACK_S to true,
+        )
+        var configured = false
+        for ((interval, minimal) in attempts) {
+            try {
+                m.configure(buildFormat(caps, interval, minimal), null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                iFrameInterval = interval
+                configured = true
+                break
+            } catch (e: Exception) {
+                Log.w(TAG, "configure interval=$interval minimal=$minimal failed: $e")
+                m.reset()
+            }
+        }
+        if (!configured) {
+            m.release()
+            throw IllegalStateException("encoder configure failed")
         }
         m.setCallback(callback, handler)
         val surface = m.createInputSurface()
         mc = m
-        Log.i(TAG, "encoder $encoderName ${width}x$height@$fps $codec ir=$intraRefresh")
+        Log.i(TAG, "encoder $encoderName ${width}x$height@$fps $codec iFrameInterval=$iFrameInterval")
         return surface
     }
 
@@ -102,7 +113,7 @@ class VideoEncoder(
         thread.join(1000)
     }
 
-    private fun buildFormat(caps: CodecCapabilities?, minimal: Boolean): MediaFormat {
+    private fun buildFormat(caps: CodecCapabilities?, iFrameIntervalS: Int, minimal: Boolean): MediaFormat {
         val f = MediaFormat.createVideoFormat(mime, width, height)
         f.setInteger(MediaFormat.KEY_COLOR_FORMAT, CodecCapabilities.COLOR_FormatSurface)
         f.setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
@@ -113,14 +124,12 @@ class VideoEncoder(
             MediaFormat.KEY_BITRATE_MODE,
             if (cbr) EncoderCapabilities.BITRATE_MODE_CBR else EncoderCapabilities.BITRATE_MODE_VBR,
         )
-        // Long GOP: keyframes come from receivers' requests. Periodic IDR stays as a backstop.
-        f.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, if (intraRefresh && !minimal) 30 else 10)
+        f.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, iFrameIntervalS)
         if (minimal) return f
 
         f.setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
         f.setInteger(MediaFormat.KEY_PRIORITY, 0)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) f.setInteger(MediaFormat.KEY_LATENCY, 1)
-        if (intraRefresh) f.setInteger(MediaFormat.KEY_INTRA_REFRESH_PERIOD, fps)
         f.setInteger(MediaFormat.KEY_COLOR_STANDARD, MediaFormat.COLOR_STANDARD_BT709)
         f.setInteger(MediaFormat.KEY_COLOR_RANGE, MediaFormat.COLOR_RANGE_LIMITED)
         f.setInteger(MediaFormat.KEY_COLOR_TRANSFER, MediaFormat.COLOR_TRANSFER_SDR_VIDEO)
@@ -179,13 +188,16 @@ class VideoEncoder(
             // Rare: config and picture in one buffer. Otherwise this buffer has no picture.
             if (AnnexB.split(bytes, codec).none { codec.isVcl(it.type) }) return
         }
-        val flaggedKey = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
-        val (au, nalKey) = AnnexB.makeSelfContained(bytes, codec, config)
-        sink(au, flaggedKey || nalKey, info.presentationTimeUs)
+        // Keyframe = the AU holds an IDR (H.264 5) / IRAP (HEVC 16..21). BUFFER_FLAG_KEY_FRAME
+        // alone is not trusted: some encoders set it on recovery-point frames that have no
+        // parameter sets and are not a valid join point.
+        val (au, idr) = AnnexB.makeSelfContained(bytes, codec, config)
+        sink(au, idr, info.presentationTimeUs)
     }
 
     companion object {
         private const val TAG = "omtx.encoder"
+        private const val NO_PERIODIC_FALLBACK_S = 3600
 
         fun mimeOf(codec: VideoCodec) = when (codec) {
             VideoCodec.H264 -> MediaFormat.MIMETYPE_VIDEO_AVC

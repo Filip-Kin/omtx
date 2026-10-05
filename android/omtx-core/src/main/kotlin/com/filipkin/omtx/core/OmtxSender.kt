@@ -27,6 +27,11 @@ class OmtxSender(
     private val portEnd: Int = PORT_END,
     private val clockMs: () -> Long = { System.nanoTime() / 1_000_000L },
     private val log: (String) -> Unit = {},
+    /**
+     * Called for every accepted socket after the portable options are set. The Android app
+     * uses it for TCP_NOTSENT_LOWAT, which plain Java cannot set; the JVM tool leaves it empty.
+     */
+    private val configureSocket: (Socket) -> Unit = {},
 ) {
     interface Listener {
         /** Make the next encoded frame a keyframe. */
@@ -256,7 +261,9 @@ class OmtxSender(
 
         private val lock = Object()
         private val queue = ArrayDeque<Item>()
-        private var videoCount = 0   // queued + being written
+        // Video in flight = handed to the writer and not yet through socket write(): counted
+        // from enqueue until write() returns, so a frame stuck in a slow write still counts.
+        private var videoCount = 0
         private var audioCount = 0
         private var metaCount = 0
         private val closed = AtomicBoolean(false)
@@ -265,7 +272,10 @@ class OmtxSender(
         init {
             socket.tcpNoDelay = true
             socket.keepAlive = true
+            // Small kernel buffer so a slow link backs up into our queue, where the 4-frame
+            // limit sees it, instead of hiding ~250 ms of video in the socket.
             try { socket.sendBufferSize = SEND_BUFFER } catch (_: SocketException) {}
+            try { configureSocket(socket) } catch (e: Exception) { log("configureSocket: ${e.message}") }
             out = socket.getOutputStream()
         }
 
@@ -345,7 +355,10 @@ class OmtxSender(
     companion object {
         const val PORT_START = 6400
         const val PORT_END = 6600
-        const val SEND_BUFFER = 128 * 1024
+        const val SEND_BUFFER = 32 * 1024
+        /** IPPROTO_TCP option 25 on Linux/Android. */
+        const val TCP_NOTSENT_LOWAT = 25
+        const val NOTSENT_LOWAT_BYTES = 16 * 1024
         const val MAX_AUDIO_QUEUED = 8
         const val MAX_METADATA_QUEUED = 60
     }

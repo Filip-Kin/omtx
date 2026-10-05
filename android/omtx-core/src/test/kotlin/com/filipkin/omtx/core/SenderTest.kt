@@ -158,6 +158,34 @@ class SenderTest {
         waitFor { sender.ceilingBps == 10_000_000 }
     }
 
+    @Test
+    fun slowReceiverOverflowsTheInFlightLimit() {
+        // Small kernel buffers both ends, receiver never reads: frames stuck in write() or the
+        // queue must count as in flight, so the 4-frame limit drops and asks for a keyframe.
+        val hooked = AtomicInteger()
+        val s = OmtxSender(SenderInfo.toXml("t", "t", "t"), object : OmtxSender.Listener {
+            override fun onKeyframeRequest() { keyRequests.incrementAndGet() }
+        }, portStart = freePort(), configureSocket = { hooked.incrementAndGet() })
+        try {
+            val port = s.start()
+            val sock = Socket()
+            sock.receiveBufferSize = 4096
+            sock.connect(InetSocketAddress("127.0.0.1", port), 2000)
+            sock.getOutputStream().write(Wire.metadataFrame(OmtStrings.SUBSCRIBE_VIDEO))
+            waitFor { keyRequests.get() >= 1 }
+            assertEquals(1, hooked.get())
+            val big = hex("00 00 00 01 65") + ByteArray(256 * 1024) { 0x55 }
+            val small = hex("00 00 00 01 41") + ByteArray(256 * 1024) { 0x55 }
+            s.sendVideo(VideoCodec.H264, 1280, 720, 30, 1, true, 1, big)
+            for (i in 2..20) { s.sendVideo(VideoCodec.H264, 1280, 720, 30, 1, false, i.toLong(), small); Thread.sleep(20) }
+            assertTrue(s.framesDropped > 0, "no drops with a stalled receiver")
+            assertTrue(keyRequests.get() >= 2, "drop did not request a keyframe")
+            sock.close()
+        } finally {
+            s.stop()
+        }
+    }
+
     companion object {
         /** Start each test on its own port so parallel/lingering sockets do not collide. */
         fun freePort(): Int {
