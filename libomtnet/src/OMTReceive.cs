@@ -770,12 +770,52 @@ namespace libomtnet
             return 0;
         }
 
+        /// <summary>
+        /// omtx: ask the sender to make its next video frame a keyframe.
+        /// </summary>
+        public void RequestKeyframe()
+        {
+            OMTChannel ch = videoChannel;
+            if (ch != null && ch.Connected)
+            {
+                ch.Send(new OMTMetadata(0, OMTMetadataConstants.KEYFRAME_REQUEST));
+            }
+        }
+
         private bool ReceiveVideo(OMTFrame frame, ref OMTMediaFrame videoFrame)
         {
             lock (videoLock)
             {
                 if (Exiting) return false;
                 OMTVideoHeader header = frame.GetVideoHeader();
+                if (OMTChannel.IsInterFrameCodec(header.Codec))
+                {
+                    //omtx: H264/HEVC are returned as received. Data and CompressedData both point at the Annex B access unit.
+                    int length = frame.Data.Length - frame.MetadataLength;
+                    if (length <= 0 || length > OMTConstants.VIDEO_MAX_SIZE) return false;
+                    if (tempCompressedVideo == IntPtr.Zero)
+                    {
+                        tempCompressedVideo = Marshal.AllocHGlobal(OMTConstants.VIDEO_MAX_SIZE);
+                    }
+                    Marshal.Copy(frame.Data.Buffer, 0, tempCompressedVideo, length);
+                    videoFrame.Type = OMTFrameType.Video;
+                    videoFrame.Timestamp = frame.Timestamp;
+                    videoFrame.Codec = header.Codec;
+                    videoFrame.Width = header.Width;
+                    videoFrame.Height = header.Height;
+                    videoFrame.Stride = 0;
+                    videoFrame.Data = tempCompressedVideo;
+                    videoFrame.DataLength = length;
+                    videoFrame.CompressedData = tempCompressedVideo;
+                    videoFrame.CompressedLength = length;
+                    videoFrame.Flags = (OMTVideoFlags)header.Flags & ~OMTVideoFlags.Preview;
+                    videoFrame.ColorSpace = (OMTColorSpace)header.ColorSpace;
+                    videoFrame.AspectRatio = header.AspectRatio;
+                    videoFrame.FrameRateN = header.FrameRateN;
+                    videoFrame.FrameRateD = header.FrameRateD;
+                    ReceiveFrameMetadata(frame, ref tempMetaVideo, ref videoFrame);
+                    return true;
+                }
                 if (header.Codec == (int)OMTCodec.VMX1)
                 {
                     OMTVideoFlags flags = (OMTVideoFlags)header.Flags;

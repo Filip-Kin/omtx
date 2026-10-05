@@ -97,7 +97,15 @@ namespace libomtnet
             {
                 OMTChannel ch = (OMTChannel)sender;
                 OnRedirectChanged(ch);
+            } else if (e.Type == OMTEventType.KeyframeRequested)
+            {
+                OnKeyframeRequested((OMTChannel)sender);
             }
+        }
+
+        internal virtual void OnKeyframeRequested(OMTChannel ch)
+        {
+
         }
 
         internal virtual void OnRedirectChanged(OMTChannel ch)

@@ -31,7 +31,8 @@ namespace libomtnet
         None = 0,
         TallyChanged = 1,
         Disconnected = 2,
-        RedirectChanged = 3
+        RedirectChanged = 3,
+        KeyframeRequested = 4
     }
 
     internal class OMTEventArgs : EventArgs

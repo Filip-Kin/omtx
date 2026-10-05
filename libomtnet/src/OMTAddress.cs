@@ -40,6 +40,12 @@ namespace libomtnet
         private const int MAX_FULLNAME_LENGTH = 63;
         internal bool removed = false;
 
+        //omtx: DNS-SD service type this address is registered or was discovered under.
+        public const string SERVICE_TYPE_OMT = "_omt._tcp";
+        public const string SERVICE_TYPE_OMTX = "_omtx._tcp";
+        private string serviceType = SERVICE_TYPE_OMT;
+        public string ServiceType { get { return serviceType; } set { serviceType = string.IsNullOrEmpty(value) ? SERVICE_TYPE_OMT : value; } }
+
         public OMTAddress(string name, int port)
         {
             this.name = SanitizeName(name);

@@ -38,6 +38,8 @@ namespace libomtnet.linux
         private IntPtr simplePoll = IntPtr.Zero;
         private IntPtr poll = IntPtr.Zero;
         private IntPtr browser = IntPtr.Zero;
+        private IntPtr browserOmtx = IntPtr.Zero;
+        private IntPtr serviceTypeOmtx;
         private AvahiClient.AvahiClientCallback clientCallback;
         private AvahiClient.AvahiServiceBrowserCallback serviceBrowserCallback;
         private AvahiClient.AvahiServiceResolverCallback serviceResolverCallback;
@@ -65,7 +67,8 @@ namespace libomtnet.linux
 
         internal OMTDiscoveryAvahi()
         {
-            serviceType = OMTUtils.StringToPtrUTF8("_omt._tcp");
+            serviceType = OMTUtils.StringToPtrUTF8(OMTAddress.SERVICE_TYPE_OMT);
+            serviceTypeOmtx = OMTUtils.StringToPtrUTF8(OMTAddress.SERVICE_TYPE_OMTX);
 
             clientCallback = new AvahiClient.AvahiClientCallback(ClientCallback);
             entryGroupCallback = new AvahiClient.AvahiEntryGroupCallback(EntryGroupCallback);
@@ -93,6 +96,12 @@ namespace libomtnet.linux
             if (browser == IntPtr.Zero)
             {
                 OMTLogging.Write("Failure creating browser: " + hr, "OMTDiscoveryAvahi");
+            }
+            browserOmtx = AvahiClient.avahi_service_browser_new(client, AvahiClient.AVAHI_IF_UNSPEC, AvahiClient.AVAHI_PROTO_UNSPEC
+                , serviceTypeOmtx, IntPtr.Zero, 0, Marshal.GetFunctionPointerForDelegate(serviceBrowserCallback), IntPtr.Zero);
+            if (browserOmtx == IntPtr.Zero)
+            {
+                OMTLogging.Write("Failure creating omtx browser", "OMTDiscoveryAvahi");
             }
             eventThreadRunning = true;
             eventThread = new Thread(EventThread);
@@ -143,6 +152,11 @@ namespace libomtnet.linux
                 AvahiClient.avahi_service_browser_free(browser);
                 browser = IntPtr.Zero;
             }
+            if (browserOmtx != IntPtr.Zero)
+            {
+                AvahiClient.avahi_service_browser_free(browserOmtx);
+                browserOmtx = IntPtr.Zero;
+            }
             if (client != IntPtr.Zero)
             {
                 AvahiClient.avahi_client_free(client);
@@ -152,6 +166,11 @@ namespace libomtnet.linux
             {
                 Marshal.FreeHGlobal(serviceType);
                 serviceType = IntPtr.Zero;
+            }
+            if (serviceTypeOmtx != IntPtr.Zero)
+            {
+                Marshal.FreeHGlobal(serviceTypeOmtx);
+                serviceTypeOmtx = IntPtr.Zero;
             }
             if (simplePoll != IntPtr.Zero)
             {
@@ -192,7 +211,8 @@ namespace libomtnet.linux
                     }
                     IntPtr pName = OMTUtils.StringToPtrUTF8(address.ToString());
                     ushort port = (ushort)address.Port;
-                    int hr = AvahiClient.avahi_entry_group_add_service(ctx.Group, AvahiClient.AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, pName, serviceType, IntPtr.Zero, IntPtr.Zero, port, IntPtr.Zero);
+                    IntPtr pType = address.ServiceType == OMTAddress.SERVICE_TYPE_OMTX ? serviceTypeOmtx : serviceType;
+                    int hr = AvahiClient.avahi_entry_group_add_service(ctx.Group, AvahiClient.AVAHI_IF_UNSPEC, AVAHI_PROTO_UNSPEC, 0, pName, pType, IntPtr.Zero, IntPtr.Zero, port, IntPtr.Zero);
                     Marshal.FreeHGlobal(pName);
                     if (hr != 0)
                     {
@@ -269,7 +289,8 @@ namespace libomtnet.linux
                         string addressName = OMTUtils.PtrToStringUTF8(name);
                         if (OMTAddress.IsValid(addressName))
                         {
-                            UpdateDiscoveredEntry(addressName, port, new IPAddress[] { ip });
+                            string typeName = type != IntPtr.Zero ? OMTUtils.PtrToStringUTF8(type) : null;
+                            UpdateDiscoveredEntry(addressName, port, new IPAddress[] { ip }, typeName == OMTAddress.SERVICE_TYPE_OMTX ? OMTAddress.SERVICE_TYPE_OMTX : OMTAddress.SERVICE_TYPE_OMT);
                         } else
                         {
                             OMTLogging.Write("InvalidAddressReceived: " + addressName, "OMTDiscoveryAvahi");

@@ -46,6 +46,9 @@ namespace libomtnet
         public const string TALLY_PROGRAM = @"<OMTTally Preview=""false"" Program==""true"" />";
         public const string TALLY_PREVIEWPROGRAM = @"<OMTTally Preview=""true"" Program==""true"" />";
         public const string TALLY_NONE = @"<OMTTally Preview=""false"" Program==""false"" />";
+
+        //omtx: receiver asks the sender to make the next frame a keyframe.
+        public const string KEYFRAME_REQUEST = @"<OMTKeyframeRequest />";
     }
     internal class OMTMetadataTemplates
     {

@@ -58,6 +58,13 @@ namespace libomtnet
         private IPEndPoint endPoint = null;
         private OMTStatistics statistics = new OMTStatistics();
 
+        //omtx: inter-frame video state. Sending: this connection gets no video until a keyframe.
+        //Receiving: frames are discarded until a keyframe after a local drop.
+        private bool sendNeedsKeyframe = true;
+        private bool receiveNeedsKeyframe = true;
+        private int sendPoolCount = 0;
+        private long congestionDrops = 0;
+
         public delegate void ChangedEventHandler(object sender, OMTEventArgs e);
         public event ChangedEventHandler Changed;
         private OMTEventArgs tempEvent = new OMTEventArgs(OMTEventType.None);
@@ -120,6 +127,7 @@ namespace libomtnet
                 sendPoolCount = OMTConstants.NETWORK_ASYNC_COUNT_META_ONLY;
                 startingSendPoolSize = OMTConstants.NETWORK_ASYNC_BUFFER_META_ONLY;
             }
+            this.sendPoolCount = sendPoolCount;
             sendpool = new OMTSocketAsyncPool(sendPoolCount, startingSendPoolSize);
             metapool = new OMTSocketAsyncPool(OMTConstants.NETWORK_ASYNC_COUNT_META_ONLY, OMTConstants.NETWORK_ASYNC_BUFFER_META_ONLY);
             framePool = new OMTFramePool(poolCount, startingFrameSize, true);
@@ -136,7 +144,29 @@ namespace libomtnet
             Changed?.Invoke(this, tempEvent);
         }
 
-        public OMTQuality SuggestedQuality {  get {  return suggestedQuality; } }       
+        public OMTQuality SuggestedQuality {  get {  return suggestedQuality; } }
+
+        /// <summary>
+        /// omtx: frames handed to the socket that have not completed sending yet.
+        /// </summary>
+        public int FramesInFlight { get { return sendPoolCount - sendpool.Count; } }
+
+        /// <summary>
+        /// omtx: inter-frame video frames dropped because the send pool was full.
+        /// </summary>
+        public long CongestionDrops { get { return Interlocked.Read(ref congestionDrops); } }
+
+        internal static bool IsInterFrameCodec(int codec)
+        {
+            return codec == (int)OMTCodec.H264 || codec == (int)OMTCodec.HEVC;
+        }
+
+        private void RaiseKeyframeRequested()
+        {
+            //Own args object: the shared tempEvent can be in use on the receive thread.
+            Changed?.Invoke(this, new OMTEventArgs(OMTEventType.KeyframeRequested));
+        }
+       
         public OMTSenderInfo SenderInformation { get {  return senderInfo; } }
 
         public bool Connected { get {
@@ -196,7 +226,19 @@ namespace libomtnet
                     {
                         return 0;
                     }
-                    frame.SetPreviewMode(preview);
+                    bool interFrame = false;
+                    bool keyframe = false;
+                    if (frame.FrameType == OMTFrameType.Video)
+                    {
+                        OMTVideoHeader vh = frame.GetVideoHeader();
+                        interFrame = IsInterFrameCodec(vh.Codec);
+                        keyframe = (vh.Flags & (int)OMTVideoFlags.Keyframe) != 0;
+                        if (interFrame && sendNeedsKeyframe && !keyframe)
+                        {
+                            return 0;
+                        }
+                    }
+                    frame.SetPreviewMode(preview && !interFrame);
                     int length = frame.Length;
                     if (length > OMTConstants.VIDEO_MAX_SIZE)
                     {
@@ -214,6 +256,13 @@ namespace libomtnet
                     {
                         statistics.FramesDropped += 1;
                         Debug.WriteLine("OMTChannel.Send.DroppedFrame");
+                        if (interFrame)
+                        {
+                            //Every frame after this one references it, so hold this connection until the next keyframe.
+                            sendNeedsKeyframe = true;
+                            Interlocked.Increment(ref congestionDrops);
+                            RaiseKeyframeRequested();
+                        }
                         return 0;
                     }
                     pool.Resize(e, length);
@@ -222,6 +271,10 @@ namespace libomtnet
                     frame.WriteDataTo(e.Buffer, 0, headerLength, length - headerLength);
                     e.SetBuffer(0, length);
                     pool.SendAsync(socket, e);
+                    if (interFrame && keyframe)
+                    {
+                        sendNeedsKeyframe = false;
+                    }
                     written = length;
                     if (frame.FrameType != OMTFrameType.Metadata)
                     {
@@ -327,6 +380,13 @@ namespace libomtnet
                 if (xml == OMTMetadataConstants.CHANNEL_SUBSCRIBE_VIDEO)
                 {
                     subscriptions |= OMTFrameType.Video;
+                    sendNeedsKeyframe = true;
+                    RaiseKeyframeRequested();
+                    return true;
+                }
+                else if (xml == OMTMetadataConstants.KEYFRAME_REQUEST)
+                {
+                    RaiseKeyframeRequested();
                     return true;
                 }
                 else if (xml == OMTMetadataConstants.CHANNEL_SUBSCRIBE_AUDIO)
@@ -460,10 +520,33 @@ namespace libomtnet
                                         {
                                             len = 0;
                                         }
+                                        bool skipFrame = false;
+                                        bool interFrame = false;
+                                        if (pendingFrame.FrameType == OMTFrameType.Video)
+                                        {
+                                            OMTVideoHeader vh = pendingFrame.GetVideoHeader();
+                                            interFrame = IsInterFrameCodec(vh.Codec);
+                                            if (interFrame)
+                                            {
+                                                if ((vh.Flags & (int)OMTVideoFlags.Keyframe) != 0)
+                                                {
+                                                    receiveNeedsKeyframe = false;
+                                                }
+                                                else if (receiveNeedsKeyframe)
+                                                {
+                                                    skipFrame = true;
+                                                }
+                                            }
+                                        }
                                         if (ProcessMetadata(pendingFrame))
                                         {
                                             framePool.Return(pendingFrame);
                                             pendingFrame = null;
+                                        }
+                                        else if (skipFrame)
+                                        {
+                                            //Keep pendingFrame: it is reused for the next frame.
+                                            statistics.FramesDropped += 1;
                                         }
                                         else
                                         {
@@ -485,6 +568,11 @@ namespace libomtnet
                                             {
                                                 statistics.FramesDropped += 1;
                                                 Debug.WriteLine("Receive.DroppedFrame: Ready " + readyFrames.Count);
+                                                if (interFrame && !receiveNeedsKeyframe)
+                                                {
+                                                    receiveNeedsKeyframe = true;
+                                                    Send(new OMTMetadata(0, OMTMetadataConstants.KEYFRAME_REQUEST));
+                                                }
                                             }
                                         }
                                     }

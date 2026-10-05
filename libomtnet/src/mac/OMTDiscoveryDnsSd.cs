@@ -264,7 +264,7 @@ namespace libomtnet.mac
                     byte[] b = BitConverter.GetBytes(port);
                     Array.Reverse(b);
                     port = BitConverter.ToUInt16(b, 0);
-                    IntPtr pType = OMTUtils.StringToPtrUTF8("_omt._tcp");
+                    IntPtr pType = OMTUtils.StringToPtrUTF8(address.ServiceType);
                     IntPtr pAddress = OMTUtils.StringToPtrUTF8(addressName);
                     IntPtr newRequest = IntPtr.Zero;
                     int hr = DnsSd.DNSServiceRegister(ref newRequest, 0, 0, pAddress, pType, IntPtr.Zero, IntPtr.Zero, port, 0, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);
@@ -321,7 +321,7 @@ namespace libomtnet.mac
                             EntryDnsSd sd = (EntryDnsSd)entry;
                             if (sd.sdRef != IntPtr.Zero)
                             {
-                                IntPtr pType = OMTUtils.StringToPtrUTF8("_omt._tcp");
+                                IntPtr pType = OMTUtils.StringToPtrUTF8(sd.Address.ServiceType);
                                 IntPtr pAddress = OMTUtils.StringToPtrUTF8(sd.RegisteredName);
                                 DnsSd.DNSServiceRefDeallocate(sd.sdRef);
                                 sd.sdRef = IntPtr.Zero;

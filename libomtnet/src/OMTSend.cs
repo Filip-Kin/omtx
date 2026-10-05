@@ -80,7 +80,17 @@ namespace libomtnet
         /// </summary>
         /// <param name="name">Specify the name of the source not including hostname</param>
         /// <param name="quality"> Specify the quality to use for video encoding. If Default, this can be automatically adjusted based on Receiver requirements.</param>
-        public OMTSend(string name, OMTQuality quality)
+        private int keyframeRequested = 0;
+
+        public OMTSend(string name, OMTQuality quality) : this(name, quality, OMTAddress.SERVICE_TYPE_OMT)
+        {
+        }
+
+        /// <summary>
+        /// omtx: create a sender registered under a specific DNS-SD service type.
+        /// Use OMTAddress.SERVICE_TYPE_OMTX for senders of H264/HEVC frames so stock OMT software does not list them.
+        /// </summary>
+        public OMTSend(string name, OMTQuality quality, string serviceType)
         {
             videoClock = new OMTClock(false);
             audioClock = new OMTClock(true);
@@ -121,6 +131,7 @@ namespace libomtnet
             BeginAccept();
             IPEndPoint ip = (IPEndPoint)this.listener.LocalEndPoint;
             this.address = new OMTAddress(name, ip.Port);
+            this.address.ServiceType = serviceType;
             this.address.AddAddress(IPAddress.Loopback);
             this.discovery.RegisterAddress(address);        }
 
@@ -461,6 +472,63 @@ namespace libomtnet
                 }
             } }
 
+        internal override void OnKeyframeRequested(OMTChannel ch)
+        {
+            Interlocked.Exchange(ref keyframeRequested, 1);
+        }
+
+        /// <summary>
+        /// omtx: true once after any receiver needs a keyframe (new subscriber, congestion drop, or OMTKeyframeRequest).
+        /// The encoder should make its next frame a keyframe.
+        /// </summary>
+        public bool ConsumeKeyframeRequest()
+        {
+            return Interlocked.Exchange(ref keyframeRequested, 0) == 1;
+        }
+
+        /// <summary>
+        /// omtx: the highest number of video frames still in flight on any connected video receiver.
+        /// </summary>
+        public int GetMaxVideoFramesInFlight()
+        {
+            int max = 0;
+            OMTChannel[] ch = channels;
+            if (ch != null)
+            {
+                foreach (OMTChannel c in ch)
+                {
+                    if (c.IsVideo() && c.Connected)
+                    {
+                        max = Math.Max(max, c.FramesInFlight);
+                    }
+                }
+            }
+            return max;
+        }
+
+        /// <summary>
+        /// omtx: total inter-frame video frames dropped for congestion across connected receivers.
+        /// Use the change between calls; it can go down when a receiver disconnects.
+        /// </summary>
+        public long GetCongestionDrops()
+        {
+            long total = 0;
+            OMTChannel[] ch = channels;
+            if (ch != null)
+            {
+                foreach (OMTChannel c in ch)
+                {
+                    total += c.CongestionDrops;
+                }
+            }
+            return total;
+        }
+
+        /// <summary>
+        /// omtx: the highest quality suggested by connected receivers.
+        /// </summary>
+        public OMTQuality ReceiverSuggestedQuality { get { return suggestedQuality; } }
+
         internal override void OnTallyChanged(OMTTally tally)
         {
             SendMetadata(OMTMetadata.FromTally(tally),null);
@@ -763,6 +831,21 @@ namespace libomtnet
                         {
                             OMTLogging.Write("Frame dimensions invalid: " + frame.Width + "x" + frame.Height + " Stride: " + frame.Stride, "OMTSend.SendVideo");
                         }
+                    } else if (frame.Codec == (int)OMTCodec.H264 || frame.Codec == (int)OMTCodec.HEVC)
+                    {
+                        //omtx: already encoded by the caller, sent as is. No preview layer exists, so preview length is the full frame.
+                        tempVideo.SetDataLength(frame.DataLength + frame.FrameMetadataLength);
+                        tempVideo.SetMetadataLength(frame.FrameMetadataLength);
+                        tempVideo.SetPreviewDataLength(frame.DataLength + frame.FrameMetadataLength);
+                        Marshal.Copy(frame.Data, tempVideo.Data.Buffer, 0, frame.DataLength);
+                        if (frame.FrameMetadataLength > 0)
+                        {
+                            Marshal.Copy(frame.FrameMetadata, tempVideo.Data.Buffer, frame.DataLength, frame.FrameMetadataLength);
+                        }
+                        tempVideo.ConfigureVideo(frame.Codec, frame.Width, frame.Height, frame.FrameRateN, frame.FrameRateD, frame.AspectRatio, frame.Flags, frame.ColorSpace);
+                        videoClock.Process(ref frame);
+                        tempVideo.Timestamp = frame.Timestamp;
+                        return Send(tempVideo);
                     } else if (frame.Codec == (int)OMTCodec.VMX1)
                     {
                         if (frame.DataLength > 0)

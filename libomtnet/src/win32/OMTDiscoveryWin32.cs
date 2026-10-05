@@ -51,11 +51,13 @@ namespace libomtnet.win32
         private DnsApi.DnsServiceRegisterComplete registerCallback;
         private DnsApi.DnsServiceBrowseCallback browseCallback;
         private DnsApi.DnsCancelHandle browseCancel = null;
+        private DnsApi.DnsCancelHandle browseCancelOmtx = null;
 
         //private DnsApi.MdnsQueryCallback mdnsQueryCallback;
         //private IntPtr mdnsQueryHandle;
 
         private MDNSClient mdnsClient;
+        private MDNSClient mdnsClientOmtx;
 
         private class EntryWin32 : OMTDiscoveryEntry
         {
@@ -120,6 +122,7 @@ namespace libomtnet.win32
             try
             {
                 mdnsClient = new MDNSClient("_omt._tcp.local");
+                mdnsClientOmtx = new MDNSClient("_omtx._tcp.local");
             }
             catch (Exception ex)
             {
@@ -133,25 +136,37 @@ namespace libomtnet.win32
                 mdnsClient.Dispose();
                 mdnsClient = null;
             }
+            if (mdnsClientOmtx != null)
+            {
+                mdnsClientOmtx.Dispose();
+                mdnsClientOmtx = null;
+            }
         }
         internal void BeginDNSBrowse()
+        {
+            browseCancel = BeginDNSBrowse("_omt._tcp.local");
+            browseCancelOmtx = BeginDNSBrowse("_omtx._tcp.local");
+        }
+
+        private DnsApi.DnsCancelHandle BeginDNSBrowse(string queryName)
         {
             DnsApi.PDNS_SERVICE_BROWSE_REQUEST request = new DnsApi.PDNS_SERVICE_BROWSE_REQUEST();
             request.InterfaceIndex = 0;
             request.Version = DnsApi.DNS_QUERY_REQUEST_VERSION1;
-            request.QueryName = "_omt._tcp.local";
+            request.QueryName = queryName;
             request.pBrowseCallback = Marshal.GetFunctionPointerForDelegate(browseCallback);
 
-            browseCancel = new DnsApi.DnsCancelHandle(false);
-            int hr = DnsApi.DnsServiceBrowse(ref request, browseCancel);
+            DnsApi.DnsCancelHandle cancel = new DnsApi.DnsCancelHandle(false);
+            int hr = DnsApi.DnsServiceBrowse(ref request, cancel);
             if (hr == DnsApi.DNS_REQUEST_PENDING)
             {
-                OMTLogging.Write("BeginDNSBrowse.OK", "OMTDiscoveryWin32");
+                OMTLogging.Write("BeginDNSBrowse.OK: " + queryName, "OMTDiscoveryWin32");
             }
             else
             {
-                OMTLogging.Write("BeginDNSBrowse.Error: " + hr, "OMTDiscoveryWin32");
+                OMTLogging.Write("BeginDNSBrowse.Error: " + queryName + ": " + hr, "OMTDiscoveryWin32");
             }
+            return cancel;
 
             //DnsApi.PMDNS_QUERY_REQUEST request = new DnsApi.PMDNS_QUERY_REQUEST();
             //request.InterfaceIndex = 0;
@@ -182,6 +197,11 @@ namespace libomtnet.win32
                 browseCancel = null;
                 OMTLogging.Write("EndDNSBrowse", "OMTDiscoveryWin32");
             }
+            if (browseCancelOmtx != null)
+            {
+                browseCancelOmtx.Close();
+                browseCancelOmtx = null;
+            }
             //if (mdnsQueryHandle != IntPtr.Zero)
             //{
             //    DnsApi.DnsStopMulticastQuery(mdnsQueryHandle);
@@ -191,14 +211,19 @@ namespace libomtnet.win32
             //}
         }
 
-        private DnsApi.PDNS_SERVICE_REGISTER_REQUEST CreateRegisterRequest(string name, string machineName, int port)
+        private DnsApi.PDNS_SERVICE_REGISTER_REQUEST CreateRegisterRequest(OMTAddress address)
+        {
+            return CreateRegisterRequest(address.ToString(), address.MachineName, address.Port, address.ServiceType);
+        }
+
+        private DnsApi.PDNS_SERVICE_REGISTER_REQUEST CreateRegisterRequest(string name, string machineName, int port, string serviceType)
         {
             DnsApi.PDNS_SERVICE_INSTANCE instance = new DnsApi.PDNS_SERVICE_INSTANCE();
             instance.dwInterfaceIndex = 0;
             instance.dwPropertyCount = 0;
             instance.ip4Address = IntPtr.Zero;
             instance.ip6Address = IntPtr.Zero;
-            instance.pszInstanceName = name.Replace(".", "") + "._omt._tcp.local"; //dots not supported in instance name on Windows
+            instance.pszInstanceName = name.Replace(".", "") + "." + serviceType + ".local"; //dots not supported in instance name on Windows
             instance.pszHostName = machineName + ".local";
             instance.wPort = (ushort)port;
             instance.wPriority = 0;
@@ -218,7 +243,7 @@ namespace libomtnet.win32
         {
             lock (lockSync)
             {
-                DnsApi.PDNS_SERVICE_REGISTER_REQUEST request = CreateRegisterRequest(address.ToString(), address.MachineName, address.Port);
+                DnsApi.PDNS_SERVICE_REGISTER_REQUEST request = CreateRegisterRequest(address);
                 EntryWin32 qr = new EntryWin32(address);
                 qr.RegisterRequest = request;
                 qr.RegisterRequest.pQueryContext = IntPtr.Zero;
@@ -307,7 +332,7 @@ namespace libomtnet.win32
                 }
                 if (ctx == null)
                 {
-                    DnsApi.PDNS_SERVICE_REGISTER_REQUEST request = CreateRegisterRequest(address.ToString(), address.MachineName, address.Port);
+                    DnsApi.PDNS_SERVICE_REGISTER_REQUEST request = CreateRegisterRequest(address);
                     EntryWin32 q = new EntryWin32(address);
                     q.RegisterRequest = request;
                     q.RegisterRequest.pQueryContext = q.ToIntPtr();
@@ -425,6 +450,7 @@ namespace libomtnet.win32
                 try
                 {
                     string addressName = "";
+                    string serviceType = null;
                     int addressPort = 0;
                     IntPtr pNext = pDnsRecord;
                     List<IPAddress> addresses = new List<IPAddress>();
@@ -436,6 +462,7 @@ namespace libomtnet.win32
                         if (wType == DnsApi.DNS_TYPE.DNS_TYPE_SRV)
                         {
                             addressName = ParseAddressName(name);
+                            serviceType = ParseServiceType(name) ?? serviceType;
                             byte[] b = new byte[2];
                             Marshal.Copy(pNext + (IntPtr.Size * 3) + 16 + 4, b, 0, 2);
                             addressPort = BitConverter.ToUInt16(b, 0);
@@ -462,6 +489,7 @@ namespace libomtnet.win32
                             {
                                 dwTtl = Marshal.ReadInt32(pNext, (IntPtr.Size * 2) + 8);
                                 addressName = ParseAddressName(nameHost);
+                                serviceType = ParseServiceType(nameHost) ?? serviceType;
                             }
                         }
                         pNext = Marshal.ReadIntPtr(pNext);
@@ -489,7 +517,7 @@ namespace libomtnet.win32
                         }
                         else
                         {
-                            OMTDiscoveryEntry entry = UpdateDiscoveredEntry(addressName, addressPort, addresses.ToArray());
+                            OMTDiscoveryEntry entry = UpdateDiscoveredEntry(addressName, addressPort, addresses.ToArray(), serviceType);
                             if (entry != null)
                             {
                                 if (dwTtl < 60)

@@ -64,7 +64,9 @@ namespace libomtnet
         Alpha = 2,
         PreMultiplied = 4,
         Preview = 8,
-        HighBitDepth = 16
+        HighBitDepth = 16,
+        //omtx: set on H264 IDR / HEVC IRAP frames.
+        Keyframe = 32
     }
 
     /// <summary>
@@ -102,7 +104,10 @@ namespace libomtnet
         YV12 = 0x32315659,
         UYVA = 0x41565955,
         P216 = 0x36313250,
-        PA16 = 0x36314150
+        PA16 = 0x36314150,
+        //omtx: inter-frame video, Annex B, one access unit per frame. See docs/PROTOCOL-OMTX.md.
+        H264 = 0x34363248,
+        HEVC = 0x43564548
     }
 
     public enum OMTPlatformType

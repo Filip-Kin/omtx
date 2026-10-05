@@ -192,12 +192,18 @@ namespace libomtnet
 
         internal OMTDiscoveryEntry UpdateDiscoveredEntry(string fullName, int port, IPAddress[] addresses)
         {
+            return UpdateDiscoveredEntry(fullName, port, addresses, null);
+        }
+
+        internal OMTDiscoveryEntry UpdateDiscoveredEntry(string fullName, int port, IPAddress[] addresses, string serviceType)
+        {
             lock (lockSync)
             {
                 OMTDiscoveryEntry entry = GetEntry(fullName);
                 if (entry == null)
                 {
                     OMTAddress address = OMTAddress.Create(fullName, port);
+                    address.ServiceType = serviceType;
                     entry = new OMTDiscoveryEntry(address);
                     entry.ChangeStatus(OMTDiscoveryEntryStatus.Discovered);
                     if (AddEntry(entry))
@@ -417,11 +423,42 @@ namespace libomtnet
         internal string ParseAddressName(string name)
         {
             int pos = name.IndexOf("._omt.");
+            if (pos < 0) pos = name.IndexOf("._omtx.");
             if (pos > 0)
             {
                 return name.Substring(0, pos);
             }
             return name;
+        }
+
+        /// <summary>
+        /// omtx: the service type contained in a full DNS-SD name, or null when there is none.
+        /// </summary>
+        internal static string ParseServiceType(string name)
+        {
+            if (name == null) return null;
+            if (name.Contains("._omtx._tcp")) return OMTAddress.SERVICE_TYPE_OMTX;
+            if (name.Contains("._omt._tcp")) return OMTAddress.SERVICE_TYPE_OMT;
+            return null;
+        }
+
+        /// <summary>
+        /// omtx: every source known to discovery, with its service type, ports and addresses.
+        /// </summary>
+        public OMTAddress[] GetSources()
+        {
+            List<OMTAddress> a = new List<OMTAddress>();
+            lock (lockSync)
+            {
+                foreach (OMTDiscoveryEntry rr in entries)
+                {
+                    if (rr.Address != null && !rr.Address.removed)
+                    {
+                        a.Add(rr.Address);
+                    }
+                }
+            }
+            return a.ToArray();
         }
 
         internal void RemoveServerAddresses()
