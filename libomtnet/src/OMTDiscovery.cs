@@ -81,21 +81,30 @@ namespace libomtnet
             {
                 if (instance == null)
                 {
-                    switch (OMTPlatform.GetPlatformType())
+                    try
                     {
-                        case OMTPlatformType.Win32:
-                            instance = new win32.OMTDiscoveryWin32();
-                            break;
-                        case OMTPlatformType.MacOS:
-                        case OMTPlatformType.iOS:
-                            instance = new mac.OMTDiscoveryMac();
-                            break;
-                        case OMTPlatformType.Linux:
-                            instance = new linux.OMTDiscoveryAvahi();
-                            break;
-                        default:
-                            instance = new OMTDiscovery();
-                            break;
+                        switch (OMTPlatform.GetPlatformType())
+                        {
+                            case OMTPlatformType.Win32:
+                                instance = new win32.OMTDiscoveryWin32();
+                                break;
+                            case OMTPlatformType.MacOS:
+                            case OMTPlatformType.iOS:
+                                instance = new mac.OMTDiscoveryMac();
+                                break;
+                            case OMTPlatformType.Linux:
+                                instance = new linux.OMTDiscoveryAvahi();
+                                break;
+                            default:
+                                instance = new OMTDiscovery();
+                                break;
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        //omtx: no platform DNS-SD (e.g. DnsServiceBrowse missing): run without discovery, omt:// URLs still work
+                        OMTLogging.Write("Discovery unavailable: " + ex.Message, "OMTDiscovery");
+                        instance = new OMTDiscovery();
                     }
                 }
             }
@@ -347,7 +356,16 @@ namespace libomtnet
                 }
                 return false;
             }
-            return RegisterAddressInternal(address);
+            try
+            {
+                return RegisterAddressInternal(address);
+            }
+            catch (Exception ex)
+            {
+                //omtx: platform DNS-SD registration missing or broken: keep the sender running, reachable by omt:// URL
+                OMTLogging.Write("RegisterAddress unavailable: " + ex.Message, "OMTDiscovery");
+                return RegisterAddressDefault(address);
+            }
         }
 
         internal bool DeregisterAddress(OMTAddress address)
