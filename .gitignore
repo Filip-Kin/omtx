@@ -6,3 +6,5 @@ build/
 local.properties
 *.apk
 !dist/.keep
+tests/shots/
+tests/clips/
