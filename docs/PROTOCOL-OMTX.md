@@ -101,4 +101,7 @@ C5 02 00 00             ColorSpace 709
 ```
 
 A metadata frame is the 16-byte header with `FrameType = 1`, `MetadataLength = 0`,
-`DataLength = UTF-8 byte length of the XML + 1`, followed by the XML and a NUL byte.
+`DataLength = UTF-8 byte length of the XML`, followed by the XML with **no** NUL byte.
+Upstream PROTOCOL.md says the XML is NUL-terminated, but libomtnet sends it without one
+(`OMTBuffer.FromMetadata`) and matches commands with `==` on the decoded string, so a NUL
+would make every command (tally, subscribe, keyframe request) be ignored. Match the code.

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Every string is a label: noun or noun phrase, no sentences. -->
+<resources>
+    <string name="app_name">omtx camera</string>
+    <string name="start">Start</string>
+    <string name="stop">Stop</string>
+    <string name="settings">Settings</string>
+    <string name="source_name">Source name</string>
+    <string name="resolution">Resolution</string>
+    <string name="frame_rate">Frame rate</string>
+    <string name="codec">Codec</string>
+    <string name="max_bitrate">Max bitrate</string>
+    <string name="receivers">Receivers</string>
+    <string name="port">Port</string>
+    <string name="camera_permission">Camera permission</string>
+    <string name="audio_off">Audio off</string>
+    <string name="camera_error">Camera error</string>
+    <string name="encoder_error">Encoder error</string>
+    <string name="port_error">Port error</string>
+    <string name="fps_unit">fps</string>
+    <string name="mbps_unit">Mbps</string>
+</resources>

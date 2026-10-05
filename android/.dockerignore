@@ -1,0 +1,10 @@
+dist
+**/build
+.gradle
+.kotlin
+local.properties
+*.apk
+*.jar
+tools/*.h264
+tools/*.h265
+__pycache__

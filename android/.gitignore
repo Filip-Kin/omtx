@@ -1,0 +1,7 @@
+build/
+.gradle/
+.kotlin/
+local.properties
+tools/*.h264
+tools/*.h265
+__pycache__/
