@@ -1,0 +1,8 @@
+bin/
+obj/
+dist/
+.gradle/
+build/
+local.properties
+*.apk
+!dist/.keep
