@@ -17,7 +17,87 @@
             android:id="@+id/preview"
             android:layout_width="match_parent"
             android:layout_height="match_parent" />
+
+        <com.filipkin.omtx.camera.PreviewOverlay
+            android:id="@+id/overlay"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent" />
     </com.filipkin.omtx.camera.AspectFrameLayout>
+
+    <!-- Camera controls: one column at the right edge, in reach of the right thumb. -->
+    <LinearLayout
+        android:id="@+id/controls"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="end|center_vertical"
+        android:layout_marginEnd="12dp"
+        android:layout_marginBottom="48dp"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <Button
+            android:id="@+id/zoom"
+            style="@style/OverlayButton" />
+
+        <Button
+            android:id="@+id/camera"
+            style="@style/OverlayButton"
+            android:text="@string/rear" />
+
+        <Button
+            android:id="@+id/focus_lock"
+            style="@style/OverlayButton"
+            android:text="@string/focus_lock" />
+
+        <Button
+            android:id="@+id/exposure_lock"
+            style="@style/OverlayButton"
+            android:text="@string/exposure_lock" />
+
+        <Button
+            android:id="@+id/exposure"
+            style="@style/OverlayButton"
+            android:text="@string/exposure" />
+
+        <Button
+            android:id="@+id/grid"
+            style="@style/OverlayButton"
+            android:text="@string/grid" />
+
+        <Button
+            android:id="@+id/tally_mode"
+            style="@style/OverlayButton"
+            android:text="@string/tally_border" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/exposure_row"
+        android:layout_width="wrap_content"
+        android:layout_height="40dp"
+        android:layout_gravity="bottom|center_horizontal"
+        android:layout_marginBottom="56dp"
+        android:background="@drawable/overlay_panel"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="4dp"
+        android:paddingEnd="12dp"
+        android:visibility="gone">
+
+        <SeekBar
+            android:id="@+id/exposure_comp"
+            android:layout_width="260dp"
+            android:layout_height="wrap_content" />
+
+        <TextView
+            android:id="@+id/exposure_value"
+            android:layout_width="wrap_content"
+            android:layout_height="match_parent"
+            android:fontFamily="monospace"
+            android:gravity="center_vertical"
+            android:minWidth="64dp"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
+    </LinearLayout>
 
     <Button
         android:id="@+id/permission"
@@ -35,6 +115,14 @@
         android:orientation="horizontal"
         android:paddingStart="12dp"
         android:paddingEnd="8dp">
+
+        <View
+            android:id="@+id/connection"
+            android:layout_width="10dp"
+            android:layout_height="10dp"
+            android:layout_marginEnd="8dp"
+            android:background="@drawable/connection_dot"
+            android:visibility="gone" />
 
         <TextView
             android:id="@+id/status"

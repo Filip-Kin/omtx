@@ -3,6 +3,11 @@ package com.filipkin.omtx.camera
 import android.content.Context
 import com.filipkin.omtx.core.VideoCodec
 
+enum class Facing { REAR, FRONT }
+
+/** How tally shows on the phone: coloured border, tint over the whole picture, or nothing. */
+enum class TallyMode { BORDER, FULL_SCREEN, OFF }
+
 data class StreamSettings(
     val sourceName: String = DEFAULT_SOURCE_NAME,
     val width: Int = 1920,
@@ -10,6 +15,9 @@ data class StreamSettings(
     val fps: Int = 30,
     val codec: VideoCodec = VideoCodec.H264,
     val maxBitrateMbps: Int = 10,
+    val facing: Facing = Facing.REAR,
+    val grid: Boolean = false,
+    val tallyMode: TallyMode = TallyMode.BORDER,
 ) {
     val maxBitrateBps: Int get() = maxBitrateMbps * 1_000_000
 
@@ -21,6 +29,9 @@ data class StreamSettings(
             .putInt("fps", fps)
             .putString("codec", codec.name)
             .putInt("maxBitrateMbps", maxBitrateMbps)
+            .putString("facing", facing.name)
+            .putBoolean("grid", grid)
+            .putString("tallyMode", tallyMode.name)
             .apply()
     }
 
@@ -44,6 +55,9 @@ data class StreamSettings(
                 fps = p.getInt("fps", d.fps).takeIf { it in FRAME_RATES } ?: d.fps,
                 codec = runCatching { VideoCodec.valueOf(p.getString("codec", d.codec.name)!!) }.getOrDefault(d.codec),
                 maxBitrateMbps = p.getInt("maxBitrateMbps", d.maxBitrateMbps).takeIf { it in BITRATES_MBPS } ?: d.maxBitrateMbps,
+                facing = runCatching { Facing.valueOf(p.getString("facing", d.facing.name)!!) }.getOrDefault(d.facing),
+                grid = p.getBoolean("grid", d.grid),
+                tallyMode = runCatching { TallyMode.valueOf(p.getString("tallyMode", d.tallyMode.name)!!) }.getOrDefault(d.tallyMode),
             )
         }
     }

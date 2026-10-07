@@ -1,17 +1,24 @@
 package com.filipkin.omtx.camera
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.Activity
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.content.res.ColorStateList
 import android.graphics.Color
+import android.graphics.PointF
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.provider.Settings
+import android.view.GestureDetector
 import android.view.KeyEvent
+import android.view.MotionEvent
+import android.view.ScaleGestureDetector
+import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import android.view.View
@@ -24,6 +31,7 @@ import android.widget.AdapterView
 import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
+import android.widget.SeekBar
 import android.widget.Spinner
 import android.widget.TextView
 import com.filipkin.omtx.core.Tally
@@ -43,6 +51,19 @@ class MainActivity : Activity(), StreamEngine.Ui, SurfaceHolder.Callback {
     private lateinit var fpsSpinner: Spinner
     private lateinit var codecSpinner: Spinner
     private lateinit var bitrateSpinner: Spinner
+    private lateinit var overlay: PreviewOverlay
+    private lateinit var controlsColumn: View
+    private lateinit var zoomButton: Button
+    private lateinit var cameraButton: Button
+    private lateinit var focusLockButton: Button
+    private lateinit var exposureLockButton: Button
+    private lateinit var exposureButton: Button
+    private lateinit var gridButton: Button
+    private lateinit var tallyModeButton: Button
+    private lateinit var exposureRow: View
+    private lateinit var exposureSeek: SeekBar
+    private lateinit var exposureValue: TextView
+    private lateinit var connectionDot: View
 
     private val main = Handler(Looper.getMainLooper())
     private var engine: StreamEngine? = null
@@ -55,6 +76,13 @@ class MainActivity : Activity(), StreamEngine.Ui, SurfaceHolder.Callback {
     private var populating = false
     private var fps = 0
     private var permissionAsked = false
+
+    // Zoom, focus and exposure for this run of the app; reset when the camera changes.
+    private var controls = CameraControls()
+    private var facings: List<Facing> = emptyList()
+    private var exposureOpen = false
+    private var otherCaps: CameraCaps? = null
+    private var tally = Tally.NONE
 
     private var resolutions: List<Pair<Int, Int>> = StreamSettings.RESOLUTIONS
     private var frameRates: List<Int> = StreamSettings.FRAME_RATES
@@ -76,6 +104,19 @@ class MainActivity : Activity(), StreamEngine.Ui, SurfaceHolder.Callback {
         fpsSpinner = findViewById(R.id.frame_rate)
         codecSpinner = findViewById(R.id.codec)
         bitrateSpinner = findViewById(R.id.max_bitrate)
+        overlay = findViewById(R.id.overlay)
+        controlsColumn = findViewById(R.id.controls)
+        zoomButton = findViewById(R.id.zoom)
+        cameraButton = findViewById(R.id.camera)
+        focusLockButton = findViewById(R.id.focus_lock)
+        exposureLockButton = findViewById(R.id.exposure_lock)
+        exposureButton = findViewById(R.id.exposure)
+        gridButton = findViewById(R.id.grid)
+        tallyModeButton = findViewById(R.id.tally_mode)
+        exposureRow = findViewById(R.id.exposure_row)
+        exposureSeek = findViewById(R.id.exposure_comp)
+        exposureValue = findViewById(R.id.exposure_value)
+        connectionDot = findViewById(R.id.connection)
 
         settings = StreamSettings.load(this)
         previewView.holder.addCallback(this)
@@ -94,6 +135,7 @@ class MainActivity : Activity(), StreamEngine.Ui, SurfaceHolder.Callback {
                 override fun onNothingSelected(p: AdapterView<*>?) {}
             }
         }
+        setUpCameraControls()
         updateUi()
     }
 
@@ -154,6 +196,8 @@ class MainActivity : Activity(), StreamEngine.Ui, SurfaceHolder.Callback {
         engine = e
         caps = e.caps
         populateSettings()
+        facings = CameraCaps.available(this)
+        e.setControls(controls, displayRotationDeg())
         if (surfaceReady) e.setPreviewSurface(previewView.holder.surface)
         if (wantStreaming) {
             wantStreaming = false
@@ -193,12 +237,24 @@ class MainActivity : Activity(), StreamEngine.Ui, SurfaceHolder.Callback {
 
     // StreamEngine.Ui
     override fun onTally(tally: Tally) {
+        this.tally = tally
+        showTally()
+    }
+
+    override fun onReceiversChanged(count: Int) = updateStatus()
+
+    private fun showTally() {
         val color = when {
             tally.program -> Color.rgb(0xE5, 0x39, 0x35)
             tally.preview -> Color.rgb(0x43, 0xA0, 0x47)
             else -> Color.TRANSPARENT
         }
-        tallyFrame.setBackgroundColor(color)
+        tallyFrame.setBackgroundColor(if (settings.tallyMode == TallyMode.BORDER) color else Color.TRANSPARENT)
+        overlay.tint = if (settings.tallyMode == TallyMode.FULL_SCREEN && color != Color.TRANSPARENT) {
+            Color.argb(TINT_ALPHA, Color.red(color), Color.green(color), Color.blue(color))
+        } else {
+            Color.TRANSPARENT
+        }
     }
 
     override fun onFailure(what: String) {
@@ -227,12 +283,17 @@ class MainActivity : Activity(), StreamEngine.Ui, SurfaceHolder.Callback {
         // Settings only apply when stopped, so the control is hidden while streaming.
         settingsButton.visibility = if (streaming || e == null) View.GONE else View.VISIBLE
         if (streaming || e == null) setPanelVisible(false)
+        updateControls()
         updateStatus()
     }
 
     private fun updateStatus() {
         val e = engine
         val f = failure
+        connectionDot.visibility = if (e?.streaming == true) View.VISIBLE else View.GONE
+        connectionDot.backgroundTintList = ColorStateList.valueOf(
+            if ((e?.receivers ?: 0) > 0) Color.rgb(0x43, 0xA0, 0x47) else Color.rgb(0x75, 0x75, 0x75),
+        )
         status.text = when {
             f != null -> getString(f)
             e == null -> ""
@@ -254,6 +315,7 @@ class MainActivity : Activity(), StreamEngine.Ui, SurfaceHolder.Callback {
             hideKeyboard()
         }
         panel.visibility = if (visible) View.VISIBLE else View.GONE
+        updateControls()
     }
 
     private fun populateSettings() {
@@ -353,6 +415,11 @@ class MainActivity : Activity(), StreamEngine.Ui, SurfaceHolder.Callback {
             setPanelVisible(false)
             return true
         }
+        if (keyCode == KeyEvent.KEYCODE_BACK && exposureOpen) {
+            exposureOpen = false
+            updateControls()
+            return true
+        }
         return super.onKeyDown(keyCode, event)
     }
 
@@ -361,5 +428,173 @@ class MainActivity : Activity(), StreamEngine.Ui, SurfaceHolder.Callback {
         VideoCodec.HEVC -> "HEVC"
     }
 
-    companion object { private const val REQ_PERMS = 1 }
+    // Camera controls
+
+    // The tap path calls overlay.performClick() from the gesture detector.
+    @SuppressLint("ClickableViewAccessibility")
+    private fun setUpCameraControls() {
+        val scale = ScaleGestureDetector(this, object : ScaleGestureDetector.SimpleOnScaleGestureListener() {
+            override fun onScale(d: ScaleGestureDetector): Boolean {
+                val c = caps ?: return false
+                setControls(controls.copy(zoom = c.clampZoom(controls.zoom * d.scaleFactor)))
+                return true
+            }
+        })
+        val taps = GestureDetector(this, object : GestureDetector.SimpleOnGestureListener() {
+            override fun onDown(e: MotionEvent) = true
+            override fun onSingleTapUp(e: MotionEvent): Boolean {
+                overlay.performClick()
+                onPreviewTap(e.x / overlay.width, e.y / overlay.height)
+                return true
+            }
+        })
+        overlay.setOnTouchListener { _, ev ->
+            scale.onTouchEvent(ev)
+            if (!scale.isInProgress) taps.onTouchEvent(ev)
+            true
+        }
+        zoomButton.setOnClickListener { setControls(controls.copy(zoom = caps?.clampZoom(1f) ?: 1f)) }
+        cameraButton.setOnClickListener { switchCamera() }
+        focusLockButton.setOnClickListener { setControls(controls.copy(focusLocked = !controls.focusLocked)) }
+        exposureLockButton.setOnClickListener { setControls(controls.copy(exposureLocked = !controls.exposureLocked)) }
+        exposureButton.setOnClickListener { exposureOpen = !exposureOpen; updateControls() }
+        gridButton.setOnClickListener { saveDisplaySettings(settings.copy(grid = !settings.grid)) }
+        tallyModeButton.setOnClickListener {
+            val modes = TallyMode.entries
+            saveDisplaySettings(settings.copy(tallyMode = modes[(settings.tallyMode.ordinal + 1) % modes.size]))
+        }
+        exposureSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+            override fun onProgressChanged(sb: SeekBar, progress: Int, fromUser: Boolean) {
+                val c = caps ?: return
+                if (fromUser) setControls(controls.copy(exposureComp = c.aeCompRange.lower + progress))
+            }
+            override fun onStartTrackingTouch(sb: SeekBar) {}
+            override fun onStopTrackingTouch(sb: SeekBar) {}
+        })
+        exposureValue.setOnClickListener { setControls(controls.copy(exposureComp = 0)) }
+    }
+
+    private fun onPreviewTap(x: Float, y: Float) {
+        if (panel.visibility == View.VISIBLE) { setPanelVisible(false); return }
+        val c = caps ?: return
+        if (!c.hasAf && c.maxAeRegions == 0) return
+        val p = PointF(x.coerceIn(0f, 1f), y.coerceIn(0f, 1f))
+        setControls(controls.copy(focusPoint = p))
+        overlay.focusPoint = p
+        main.removeCallbacks(hideFocusMarker)
+        if (!controls.focusLocked) main.postDelayed(hideFocusMarker, FOCUS_MARKER_MS)
+    }
+
+    private val hideFocusMarker = Runnable { if (!controls.focusLocked) overlay.focusPoint = null }
+
+    private fun setControls(c: CameraControls) {
+        val unlocked = controls.focusLocked && !c.focusLocked
+        controls = c
+        engine?.setControls(c, displayRotationDeg())
+        if (unlocked) main.postDelayed(hideFocusMarker, FOCUS_MARKER_MS)
+        updateControls()
+    }
+
+    private fun switchCamera() {
+        val e = engine ?: return
+        val next = otherFacing() ?: return
+        controls = CameraControls()
+        main.removeCallbacks(hideFocusMarker)
+        settings = settings.copy(facing = next)
+        e.setFacing(next, controls)
+        caps = e.caps
+        if (e.streaming) {
+            settings.save(this)
+        } else {
+            // Sizes, frame rates and codecs depend on the camera.
+            populateSettings()
+        }
+        updateControls()
+    }
+
+    private fun otherFacing(): Facing? = facings.firstOrNull { it != settings.facing }
+
+    /** While streaming the stream size cannot change, so the other camera must offer it. */
+    private fun canSwitchCamera(): Boolean {
+        val next = otherFacing() ?: return false
+        val e = engine ?: return false
+        if (!e.streaming) return true
+        val other = otherCaps?.takeIf { it.facing == next } ?: CameraCaps(this, next).also { otherCaps = it }
+        return other.supportsSize(settings.width, settings.height) &&
+            other.supportsFps(settings.width, settings.height, settings.fps)
+    }
+
+    /** Grid and tally display: apply at once, streaming or not. */
+    private fun saveDisplaySettings(next: StreamSettings) {
+        settings = next
+        settings.save(this)
+        engine?.let { it.settings = it.settings.copy(grid = next.grid, tallyMode = next.tallyMode) }
+        updateControls()
+    }
+
+    private fun updateControls() {
+        val c = caps
+        val show = engine != null && c != null && panel.visibility != View.VISIBLE
+        controlsColumn.visibility = if (show) View.VISIBLE else View.GONE
+        overlay.grid = settings.grid
+        overlay.focusLocked = controls.focusLocked
+        // The marker shows after a tap and stays while focus is locked.
+        when {
+            controls.focusPoint == null -> overlay.focusPoint = null
+            controls.focusLocked -> overlay.focusPoint = controls.focusPoint
+        }
+        showTally()
+        if (c == null) { exposureRow.visibility = View.GONE; return }
+
+        val zoomable = c.zoomRange.upper > c.zoomRange.lower
+        zoomButton.visibility = if (zoomable) View.VISIBLE else View.GONE
+        zoomButton.text = String.format(Locale.US, "%.1fx", c.clampZoom(controls.zoom))
+
+        cameraButton.visibility = if (facings.size > 1) View.VISIBLE else View.GONE
+        cameraButton.setText(if (settings.facing == Facing.FRONT) R.string.front else R.string.rear)
+        cameraButton.isEnabled = canSwitchCamera()
+
+        focusLockButton.visibility = if (c.hasAf) View.VISIBLE else View.GONE
+        focusLockButton.isActivated = controls.focusLocked
+
+        exposureLockButton.visibility = if (c.aeLockAvailable) View.VISIBLE else View.GONE
+        exposureLockButton.isActivated = controls.exposureLocked
+
+        val hasComp = c.aeCompRange.upper > c.aeCompRange.lower && c.aeCompStep > 0f
+        exposureButton.visibility = if (hasComp) View.VISIBLE else View.GONE
+        if (!hasComp) exposureOpen = false
+        exposureButton.isActivated = exposureOpen
+        exposureRow.visibility = if (show && exposureOpen) View.VISIBLE else View.GONE
+        if (hasComp) {
+            exposureSeek.max = c.aeCompRange.upper - c.aeCompRange.lower
+            exposureSeek.progress = controls.exposureComp.coerceIn(c.aeCompRange.lower, c.aeCompRange.upper) - c.aeCompRange.lower
+            exposureValue.text = String.format(Locale.US, "%+.1f %s", controls.exposureComp * c.aeCompStep, getString(R.string.ev_unit))
+        }
+
+        gridButton.isActivated = settings.grid
+        tallyModeButton.setText(
+            when (settings.tallyMode) {
+                TallyMode.BORDER -> R.string.tally_border
+                TallyMode.FULL_SCREEN -> R.string.tally_full_screen
+                TallyMode.OFF -> R.string.tally_off
+            },
+        )
+    }
+
+    @Suppress("DEPRECATION")
+    private fun displayRotationDeg(): Int {
+        val r = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) display?.rotation else windowManager.defaultDisplay.rotation
+        return when (r) {
+            Surface.ROTATION_90 -> 90
+            Surface.ROTATION_180 -> 180
+            Surface.ROTATION_270 -> 270
+            else -> 0
+        }
+    }
+
+    companion object {
+        private const val REQ_PERMS = 1
+        private const val FOCUS_MARKER_MS = 1500L
+        private const val TINT_ALPHA = 0x66
+    }
 }
