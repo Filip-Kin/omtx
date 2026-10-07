@@ -65,6 +65,21 @@ namespace libomtnet
         private int sendPoolCount = 0;
         private long congestionDrops = 0;
         private bool lowLatencySocket = false;
+        private long lastKeyframeRequest = 0;
+
+        /// <summary>
+        /// omtx: ask the sender for a keyframe, at most once per second. The sender has one encoder for
+        /// every receiver, so a receiver that keeps dropping (too slow to decode) must not turn the
+        /// whole stream into a keyframe storm.
+        /// </summary>
+        internal bool RequestKeyframe()
+        {
+            long now = Stopwatch.GetTimestamp() / (Stopwatch.Frequency / 1000);
+            if (now - Interlocked.Read(ref lastKeyframeRequest) < 1000) return false;
+            Interlocked.Exchange(ref lastKeyframeRequest, now);
+            Send(new OMTMetadata(0, OMTMetadataConstants.KEYFRAME_REQUEST));
+            return true;
+        }
 
         public delegate void ChangedEventHandler(object sender, OMTEventArgs e);
         public event ChangedEventHandler Changed;
@@ -576,6 +591,10 @@ namespace libomtnet
                                         {
                                             //Keep pendingFrame: it is reused for the next frame.
                                             statistics.FramesDropped += 1;
+                                            //Still waiting: keep asking (at most once a second). The first request
+                                            //or the keyframe itself can be lost, e.g. dropped here while the
+                                            //application was still busy; omtx senders never send one unasked.
+                                            RequestKeyframe();
                                         }
                                         else
                                         {
@@ -597,10 +616,12 @@ namespace libomtnet
                                             {
                                                 statistics.FramesDropped += 1;
                                                 Debug.WriteLine("Receive.DroppedFrame: Ready " + readyFrames.Count);
-                                                if (interFrame && !receiveNeedsKeyframe)
+                                                if (interFrame)
                                                 {
+                                                    //Every drop asks (rate-limited), not only the first: the
+                                                    //keyframe that answers can itself be dropped here.
                                                     receiveNeedsKeyframe = true;
-                                                    Send(new OMTMetadata(0, OMTMetadataConstants.KEYFRAME_REQUEST));
+                                                    RequestKeyframe();
                                                 }
                                             }
                                         }

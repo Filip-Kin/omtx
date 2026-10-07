@@ -292,6 +292,11 @@ internal sealed unsafe class VideoDecoder : IDisposable
     /// (pointer, stride, width, height). Returns false when the decoder rejected the data.
     /// </summary>
     public bool Decode(IntPtr data, int length, long timestamp, Action<IntPtr, int, int, int, long> onPicture)
+        => DecodeFrames(data, length, timestamp, f => onPicture(ToUyvy(f), Av.FrameWidth(f) * 2, Av.FrameWidth(f), Av.FrameHeight(f), Av.FramePts(f)));
+
+    /// <summary>Decode one access unit; each decoded AVFrame goes to <paramref name="onFrame"/> as it is
+    /// (valid only during the call). Returns false when the decoder rejected the data.</summary>
+    public bool DecodeFrames(IntPtr data, int length, long timestamp, Action<IntPtr> onFrame)
     {
         // libavcodec wants AV_INPUT_BUFFER_PADDING_SIZE (64) zero bytes after the data
         if (packetBuf.Length < length + 64)
@@ -316,6 +321,14 @@ internal sealed unsafe class VideoDecoder : IDisposable
             r = Av.ReceiveFrame(ctx, frame);
             if (r == Av.AVERROR_EAGAIN || r == Av.AVERROR_EOF) break;
             if (r < 0) { ok = false; break; }
+            onFrame(frame);
+        }
+        return ok;
+    }
+
+    private IntPtr ToUyvy(IntPtr frame)
+    {
+        {
             int w = Av.FrameWidth(frame), h = Av.FrameHeight(frame), fmt = Av.FrameFormat(frame);
             if (sws == IntPtr.Zero || fmt != swsFmt || w != swsW || h != swsH)
             {
@@ -335,9 +348,8 @@ internal sealed unsafe class VideoDecoder : IDisposable
             dst[0] = (byte*)outBuf; dst[1] = dst[2] = dst[3] = null;
             dstStride[0] = stride; dstStride[1] = dstStride[2] = dstStride[3] = 0;
             Av.SwsScale(sws, Av.FrameData(frame), Av.FrameLinesize(frame), h, dst, dstStride);
-            onPicture(outBuf, stride, w, h, Av.FramePts(frame));
+            return outBuf;
         }
-        return ok;
     }
 
     public void Dispose()

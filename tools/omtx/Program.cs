@@ -12,9 +12,10 @@ internal static class Program
   omtx list [--seconds N]
       Sources on the network, both stock OMT (_omt._tcp) and omtx (_omtx._tcp).
 
-  omtx play <source> [high|medium|low] [--window WxH+X+Y] [--audio] [--ffplay PATH] [--stats]
-      Receive an omtx source and play it fullscreen in ffplay (window mode with --window).
-      Video only unless --audio (audio uses ffplay's audio clock and costs latency).
+  omtx play <source> [high|medium|low] [--window WxH+X+Y] [--audio] [--ffplay PATH] [--no-vsync] [--stats]
+      Receive an omtx source and play it fullscreen (window mode with --window). Video only:
+      decoded here and drawn with SDL2 the moment each picture is ready. With --audio, --ffplay,
+      or no SDL2/libavcodec, plays through ffplay instead (audio clock, more latency).
       <source> is a name ""HOST (Name)"", omtx://host:port or host:port.
 
   omtx out [<stock OMT source>] [--name NAME] [--codec h264|hevc] [--bitrate KBPS] [--min KBPS]
@@ -33,6 +34,11 @@ internal static class Program
   omtx bars [--name NAME] [--size WxH] [--fps N] [--omtx] [--noise] [--encoder LIST] [--ffmpeg DIR]
       Test pattern with a tone. Stock OMT (VMX) by default, omtx H.264 with --omtx. The bottom
       strip is the wall clock in ms (16 bits) for latency checks; --noise fills the top third.
+
+  omtx probe <source> [--seconds 10] [--strip X0,X1,Y] [--clock http://HOST:6390] [--ffmpeg DIR]
+      Latency of a source carrying the bars clock strip, read after decode in this process (no
+      display). --strip locates the strip when bars sits inside a vMix layout; --clock corrects for
+      the bars machine's clock through its omtx ui.
 ";
 
     static int Main(string[] args)
@@ -51,6 +57,7 @@ internal static class Program
                 "in" => InCmd.Run(a),
                 "bars" => BarsCmd.Run(a),
                 "ui" => UiCmd.Run(a),
+                "probe" => ProbeCmd.Run(a),
                 "--version" or "version" => Print(Version),
                 _ => Fail("Unknown command: " + args[0] + "\n\n" + Usage),
             };
@@ -92,7 +99,7 @@ internal sealed class Args
 {
     public readonly List<string> Positional = new();
     private readonly Dictionary<string, string> named = new();
-    private static readonly HashSet<string> Flags = new() { "--stats", "--no-audio", "--omtx", "--intra-refresh", "--noise", "--audio", "--no-open" };
+    private static readonly HashSet<string> Flags = new() { "--stats", "--no-audio", "--omtx", "--intra-refresh", "--noise", "--audio", "--no-open", "--no-vsync" };
 
     public Args(string[] a)
     {

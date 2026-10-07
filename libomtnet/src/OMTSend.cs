@@ -432,6 +432,10 @@ namespace libomtnet
                 channels = list.ToArray();
             }
             channel.Changed += Channel_Changed;
+            //omtx: OnAccept starts receiving before this handler is attached, so the channel's own
+            //keyframe request on subscribe can fire with nobody listening and the new receiver would
+            //wait for ever. Every new connection asks for a keyframe here, after the handler exists.
+            OnKeyframeRequested(channel);
             UpdateTally();
             if (discoveryServer != null)
             {

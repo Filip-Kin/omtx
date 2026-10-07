@@ -778,7 +778,7 @@ namespace libomtnet
             OMTChannel ch = videoChannel;
             if (ch != null && ch.Connected)
             {
-                ch.Send(new OMTMetadata(0, OMTMetadataConstants.KEYFRAME_REQUEST));
+                ch.RequestKeyframe();
             }
         }
 

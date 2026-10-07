@@ -27,6 +27,15 @@ internal static class PlayCmd
         string window = a.Get("--window");
         string ffplay = a.Get("--ffplay", "ffplay");
 
+        // Video only: decode here and draw with SDL2 the moment a picture is ready. ffplay stays
+        // for --audio, for --ffplay, and for machines without SDL2 or libavcodec.
+        if (noAudio && !a.Has("--ffplay") && SdlWindow.Load())
+        {
+            bool av = true;
+            try { Av.Load(a.Get("--ffmpeg")); } catch (Exception ex) { av = false; Console.Error.WriteLine("omtx play: " + ex.Message + "; using ffplay"); }
+            if (av) return RunSdl(a, address, quality, window, stats);
+        }
+
         var types = noAudio ? OMTFrameType.Video : OMTFrameType.Video | OMTFrameType.Audio;
         using var recv = new OMTReceive(address, types, OMTPreferredVideoFormat.UYVY, OMTReceiveFlags.None);
         recv.SetSuggestedQuality(quality);
@@ -157,6 +166,87 @@ internal static class PlayCmd
     /// </summary>
     static long VideoPts(Stopwatch arrival) => (long)(arrival.Elapsed.TotalMilliseconds * 0.9);
 
+    static unsafe int RunSdl(Args a, string address, OMTQuality quality, string window, bool stats)
+    {
+        using var recv = new OMTReceive(address, OMTFrameType.Video, OMTPreferredVideoFormat.UYVY, OMTReceiveFlags.None);
+        recv.SetSuggestedQuality(quality);
+        using var win = new SdlWindow($"omtx {a.Positional[0]}", window, !a.Has("--no-vsync"));
+        int i420 = Av.PixFmt("yuv420p"), j420 = Av.PixFmt("yuvj420p");
+        VideoDecoder dec = null;
+        int decCodec = 0;
+        bool waitKey = true;
+        IntPtr sws = IntPtr.Zero; int swsFmt = -1, swsW = 0, swsH = 0;
+        IntPtr conv = IntPtr.Zero;
+        var frame = new OMTMediaFrame();
+        var statTimer = Stopwatch.StartNew();
+        long statFrames = 0, statBytes = 0;
+        double decMs = 0, showMs = 0;
+        var t = new Stopwatch();
+        bool warnedStock = false;
+        try
+        {
+            while (Program.Running && win.Pump())
+            {
+                if (!recv.Receive(OMTFrameType.Video, 20, ref frame) || frame.Type != OMTFrameType.Video) continue;
+                if (frame.Codec != (int)OMTCodec.H264 && frame.Codec != (int)OMTCodec.HEVC)
+                {
+                    if (!warnedStock) { Console.Error.WriteLine("omtx play: stock OMT source (not H.264/HEVC); use omt-play for it"); warnedStock = true; }
+                    continue;
+                }
+                bool key = frame.Flags.HasFlag(OMTVideoFlags.Keyframe);
+                if (dec == null || decCodec != frame.Codec)
+                {
+                    dec?.Dispose();
+                    dec = new VideoDecoder(frame.Codec == (int)OMTCodec.HEVC ? new[] { "hevc" } : new[] { "h264" });
+                    decCodec = frame.Codec; waitKey = true;
+                    Console.Error.WriteLine($"omtx play: {StreamStats.CodecName(frame.Codec)} {frame.Width}x{frame.Height} decoder {dec.Name}");
+                }
+                if (waitKey && !key) { recv.RequestKeyframe(); continue; }
+                waitKey = false;
+                statFrames++; statBytes += frame.DataLength;
+                t.Restart();
+                bool ok = dec.DecodeFrames(frame.Data, frame.DataLength, frame.Timestamp, f =>
+                {
+                    decMs += t.Elapsed.TotalMilliseconds; t.Restart();
+                    int w = Av.FrameWidth(f), h = Av.FrameHeight(f), fmt = Av.FrameFormat(f);
+                    byte** d = Av.FrameData(f); int* l = Av.FrameLinesize(f);
+                    if (fmt != i420 && fmt != j420)
+                    {
+                        // e.g. 10-bit or 4:2:2 from a camera: convert to I420 for the texture
+                        if (sws == IntPtr.Zero || fmt != swsFmt || w != swsW || h != swsH)
+                        {
+                            Av.SwsFree(sws); if (conv != IntPtr.Zero) Av.FrameFree(ref conv);
+                            sws = Av.SwsGet(w, h, fmt, w, h, i420); swsFmt = fmt; swsW = w; swsH = h;
+                            conv = Av.FrameAlloc();
+                            Av.FrameWidth(conv) = w; Av.FrameHeight(conv) = h; Av.FrameFormat(conv) = i420;
+                            Av.FrameGetBuffer(conv);
+                        }
+                        Av.SwsScale(sws, d, l, h, Av.FrameData(conv), Av.FrameLinesize(conv));
+                        d = Av.FrameData(conv); l = Av.FrameLinesize(conv);
+                    }
+                    win.Show(d[0], l[0], d[1], l[1], d[2], l[2], w, h);
+                    showMs += t.Elapsed.TotalMilliseconds;
+                });
+                if (!ok) { recv.RequestKeyframe(); waitKey = true; }
+
+                if (stats && statTimer.ElapsedMilliseconds >= 5000)
+                {
+                    double sec = statTimer.Elapsed.TotalSeconds;
+                    var st = recv.GetVideoStatistics();
+                    Console.Error.WriteLine($"[play] {statFrames / sec:F1} fps  {statBytes * 8 / sec / 1e6:F2} Mbps  dropped {st.FramesDropped}  decode {decMs / Math.Max(1, statFrames):F1} ms  draw {showMs / Math.Max(1, statFrames):F1} ms");
+                    statTimer.Restart(); statFrames = 0; statBytes = 0; decMs = showMs = 0;
+                }
+            }
+        }
+        finally
+        {
+            dec?.Dispose();
+            Av.SwsFree(sws);
+            if (conv != IntPtr.Zero) Av.FrameFree(ref conv);
+        }
+        return 0;
+    }
+
     static Process StartPlayer(string ffplay, string window, bool audio, string title)
     {
         var args = new List<string> {
@@ -184,7 +274,7 @@ internal static class PlayCmd
         return Process.Start(psi) ?? throw new InvalidOperationException("could not start " + ffplay);
     }
 
-    static bool TryGeom(string s, out int w, out int h, out int x, out int y)
+    internal static bool TryGeom(string s, out int w, out int h, out int x, out int y)
     {
         w = h = x = y = 0;
         var m = System.Text.RegularExpressions.Regex.Match(s, @"^(\d+)x(\d+)\+(-?\d+)\+(-?\d+)$");
