@@ -5,9 +5,10 @@
 #
 #   ./build.sh            -> dist/omtx-camera.apk, dist/omtx-file-sender.jar
 #
-# Gradle caches and the debug signing key live in BuildKit cache mounts, so rebuilds are fast
-# and every build is signed with the same key (updates install over each other). Build output
-# stays inside the container; only /out is copied to the host.
+# Gradle caches live in a BuildKit cache mount, so rebuilds are fast. The signing key comes from
+# the host (build.sh passes it as a build secret): BuildKit garbage-collects cache mounts, and a
+# key kept only there was lost once (2026-10-07), so the next APK would not install over the
+# last one. Build output stays inside the container; only /out is copied to the host.
 FROM eclipse-temurin:17-jdk-jammy AS build
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -35,9 +36,11 @@ WORKDIR /src
 COPY . .
 
 RUN --mount=type=cache,target=/root/.gradle \
-    --mount=type=cache,target=/root/.android \
-      gradle --no-daemon --console=plain \
+    --mount=type=secret,id=signing \
+      mkdir -p /root/.android /out \
+      && if [ -s /run/secrets/signing ]; then cp /run/secrets/signing /root/.android/debug.keystore; fi \
+      && gradle --no-daemon --console=plain \
         :omtx-core:test :omtx-core:fileSenderJar :app:assembleRelease \
-      && mkdir -p /out \
+      && cp /root/.android/debug.keystore /out/debug.keystore \
       && cp app/build/outputs/apk/release/app-release.apk /out/omtx-camera.apk \
       && cp omtx-core/build/dist/omtx-file-sender.jar /out/omtx-file-sender.jar
