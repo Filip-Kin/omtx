@@ -35,6 +35,13 @@ internal static unsafe class Av
     static delegate* unmanaged[Cdecl]<IntPtr, byte*, AVRational, int, int> p_av_opt_set_q;
     static delegate* unmanaged[Cdecl]<byte*, int> p_av_get_pix_fmt;
     static delegate* unmanaged[Cdecl]<int, byte*, nuint, int> p_av_strerror;
+    static delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, int, int, IntPtr> p_av_opt_find;
+    static delegate* unmanaged[Cdecl]<byte*, int> p_av_hwdevice_find_type_by_name;
+    static delegate* unmanaged[Cdecl]<IntPtr*, int, byte*, IntPtr, int, int> p_av_hwdevice_ctx_create;
+    static delegate* unmanaged[Cdecl]<IntPtr, IntPtr, int, int> p_av_hwframe_transfer_data;
+    static delegate* unmanaged[Cdecl]<IntPtr, IntPtr> p_av_buffer_ref;
+    static delegate* unmanaged[Cdecl]<IntPtr*, void> p_av_buffer_unref;
+    static delegate* unmanaged[Cdecl]<IntPtr, void> p_av_frame_unref;
     // avcodec
     static delegate* unmanaged[Cdecl]<byte*, IntPtr> p_avcodec_find_encoder_by_name;
     static delegate* unmanaged[Cdecl]<byte*, IntPtr> p_avcodec_find_decoder_by_name;
@@ -114,6 +121,13 @@ internal static unsafe class Av
         p_av_opt_set_q = (delegate* unmanaged[Cdecl]<IntPtr, byte*, AVRational, int, int>)NativeLibrary.GetExport(u, "av_opt_set_q");
         p_av_get_pix_fmt = (delegate* unmanaged[Cdecl]<byte*, int>)NativeLibrary.GetExport(u, "av_get_pix_fmt");
         p_av_strerror = (delegate* unmanaged[Cdecl]<int, byte*, nuint, int>)NativeLibrary.GetExport(u, "av_strerror");
+        p_av_opt_find = (delegate* unmanaged[Cdecl]<IntPtr, byte*, byte*, int, int, IntPtr>)NativeLibrary.GetExport(u, "av_opt_find");
+        p_av_hwdevice_find_type_by_name = (delegate* unmanaged[Cdecl]<byte*, int>)NativeLibrary.GetExport(u, "av_hwdevice_find_type_by_name");
+        p_av_hwdevice_ctx_create = (delegate* unmanaged[Cdecl]<IntPtr*, int, byte*, IntPtr, int, int>)NativeLibrary.GetExport(u, "av_hwdevice_ctx_create");
+        p_av_hwframe_transfer_data = (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, int, int>)NativeLibrary.GetExport(u, "av_hwframe_transfer_data");
+        p_av_buffer_ref = (delegate* unmanaged[Cdecl]<IntPtr, IntPtr>)NativeLibrary.GetExport(u, "av_buffer_ref");
+        p_av_buffer_unref = (delegate* unmanaged[Cdecl]<IntPtr*, void>)NativeLibrary.GetExport(u, "av_buffer_unref");
+        p_av_frame_unref = (delegate* unmanaged[Cdecl]<IntPtr, void>)NativeLibrary.GetExport(u, "av_frame_unref");
 
         p_avcodec_find_encoder_by_name = (delegate* unmanaged[Cdecl]<byte*, IntPtr>)NativeLibrary.GetExport(c, "avcodec_find_encoder_by_name");
         p_avcodec_find_decoder_by_name = (delegate* unmanaged[Cdecl]<byte*, IntPtr>)NativeLibrary.GetExport(c, "avcodec_find_decoder_by_name");
@@ -175,6 +189,39 @@ internal static unsafe class Av
     public static void FrameFree(ref IntPtr f) { IntPtr p = f; if (p != IntPtr.Zero) p_av_frame_free(&p); f = IntPtr.Zero; }
     public static int FrameGetBuffer(IntPtr f) => p_av_frame_get_buffer(f, 32);
     public static int FrameMakeWritable(IntPtr f) => p_av_frame_make_writable(f);
+
+    // ---- hardware decode -----------------------------------------------------------------
+
+    /// <summary>A hardware device ("d3d11va", "vaapi", ...) as an AVBufferRef, or Zero when there is none.</summary>
+    public static IntPtr HwDeviceCreate(string type)
+    {
+        int t;
+        fixed (byte* n = Z(type)) t = p_av_hwdevice_find_type_by_name(n);
+        if (t <= 0) return IntPtr.Zero;
+        IntPtr dev = IntPtr.Zero;
+        return p_av_hwdevice_ctx_create(&dev, t, null, IntPtr.Zero, 0) < 0 ? IntPtr.Zero : dev;
+    }
+
+    public static void BufferUnref(ref IntPtr buf) { IntPtr b = buf; if (b != IntPtr.Zero) p_av_buffer_unref(&b); buf = IntPtr.Zero; }
+
+    /// <summary>
+    /// Sets AVCodecContext.hw_device_ctx, which has no AVOption. Its place is found from one that
+    /// does: hw_device_ctx is the pointer right before hwaccel_flags in every FFmpeg from 4.3 to 8.1
+    /// (avcodec.h), and AVOption.offset (after two pointers) gives hwaccel_flags' offset.
+    /// With it set, libavcodec's default get_format picks the matching hwaccel by itself.
+    /// </summary>
+    public static bool SetHwDevice(IntPtr ctx, IntPtr device)
+    {
+        IntPtr opt;
+        fixed (byte* n = Z("hwaccel_flags")) opt = p_av_opt_find(ctx, n, null, 0, 0);
+        if (opt == IntPtr.Zero) return false;
+        int offset = *(int*)((byte*)opt + 16) - IntPtr.Size;
+        *(IntPtr*)((byte*)ctx + offset) = p_av_buffer_ref(device);
+        return true;
+    }
+
+    public static int HwTransfer(IntPtr dst, IntPtr src) => p_av_hwframe_transfer_data(dst, src, 0);
+    public static void FrameUnref(IntPtr f) => p_av_frame_unref(f);
 
     public static IntPtr SwsGet(int sw, int sh, int sf, int dw, int dh, int df) =>
         p_sws_getContext(sw, sh, sf, dw, dh, df, 4 /*SWS_BICUBIC*/, IntPtr.Zero, IntPtr.Zero, IntPtr.Zero);

@@ -27,9 +27,8 @@ internal sealed class RateControl
 
     public static long CapFor(OMTQuality q) => q switch
     {
-        OMTQuality.Low => 4_000_000,
-        OMTQuality.Medium => 8_000_000,
-        OMTQuality.High => 15_000_000,
+        OMTQuality.Low => 8_000_000,
+        OMTQuality.Medium => 15_000_000,
         _ => long.MaxValue,
     };
 

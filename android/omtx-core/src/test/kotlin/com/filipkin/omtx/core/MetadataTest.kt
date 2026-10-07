@@ -57,9 +57,9 @@ class MetadataTest {
         assertEquals(Quality.Default, Quality.highest(listOf(Quality.Default, Quality.Default)))
         assertEquals(Quality.Low, Quality.highest(listOf(Quality.Default, Quality.Low)))
         assertEquals(Quality.High, Quality.highest(listOf(Quality.Medium, Quality.High, Quality.Low)))
-        assertEquals(4_000_000, Quality.Low.capBps)
-        assertEquals(8_000_000, Quality.Medium.capBps)
-        assertEquals(15_000_000, Quality.High.capBps)
+        assertEquals(8_000_000, Quality.Low.capBps)
+        assertEquals(15_000_000, Quality.Medium.capBps)
+        assertEquals(null, Quality.High.capBps)
         assertEquals(null, Quality.Default.capBps)
     }
 }

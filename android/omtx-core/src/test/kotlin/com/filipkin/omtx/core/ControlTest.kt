@@ -122,15 +122,16 @@ class BitrateControllerTest {
         assertEquals(10_000_000, c.targetBps)
         assertFalse(c.tick(4000, 0))
         assertTrue(c.setQualityCap(Quality.Low.capBps))
-        assertEquals(4_000_000, c.targetBps)
-        assertEquals(4_000_000, c.ceilingBps)
-        c.setQualityCap(Quality.High.capBps)  // 15 Mbps cap above user ceiling: user wins
+        assertEquals(8_000_000, c.targetBps)
+        assertEquals(8_000_000, c.ceilingBps)
+        c.setQualityCap(Quality.Medium.capBps)  // 15 Mbps cap above user ceiling: user wins
         assertEquals(10_000_000, c.ceilingBps)
         c.setQualityCap(null)
         assertEquals(10_000_000, c.ceilingBps)
-        assertEquals(4_000_000, c.targetBps)   // cap lifted: target climbs back by steps, not at once
-        assertFalse(c.setUserCeiling(5_000_000))
+        assertEquals(8_000_000, c.targetBps)   // cap lifted: target climbs back by steps, not at once
+        assertTrue(c.setUserCeiling(5_000_000))  // ceiling below the target pulls it down
         assertEquals(5_000_000, c.ceilingBps)
+        assertEquals(5_000_000, c.targetBps)
         val d = BitrateController(10_000_000)
         assertTrue(d.setUserCeiling(5_000_000))
         assertEquals(5_000_000, d.targetBps)

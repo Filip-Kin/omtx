@@ -50,13 +50,13 @@ data class Tally(val preview: Boolean, val program: Boolean) {
 enum class Quality(val level: Int) {
     Default(0), Low(1), Medium(50), High(100);
 
-    /** PROTOCOL-OMTX.md §4.5 ceiling cap in bits per second, null for Default. */
+    /** PROTOCOL-OMTX.md §4.5 ceiling cap in bits per second, null (no cap) for Default and High. */
     val capBps: Int?
         get() = when (this) {
             Default -> null
-            Low -> 4_000_000
-            Medium -> 8_000_000
-            High -> 15_000_000
+            Low -> 8_000_000
+            Medium -> 15_000_000
+            High -> null
         }
 
     companion object {

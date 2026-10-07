@@ -56,7 +56,9 @@ internal sealed class OutOptions
     public string Name;                   // published name, null = derived
     public bool Hevc;
     public string[] Encoders;
-    public long CeilingBps = 10_000_000, FloorBps = 3_000_000;
+    // No cap: the encoders run at constant quality (see VideoEncoder) and take what the picture
+    // needs. Only congestion steps the rate down.
+    public long CeilingBps = 1_000_000_000, FloorBps = 3_000_000;
     public bool IntraRefresh;
     public bool Bgra;                     // ask for BGRA and give it to the GPU encoder (no CPU conversion)
     public double VbvFrames = 1.0;
@@ -311,6 +313,7 @@ internal sealed class InBridge : Bridge
         var lastViewer = Stopwatch.StartNew();
 
         VideoDecoder dec = null;
+        using var nv12 = new Nv12Packer();
         int decCodec = 0;
         var frame = new OMTMediaFrame();
         var outFrame = new OMTMediaFrame();
@@ -360,8 +363,9 @@ internal sealed class InBridge : Bridge
                 {
                     dec?.Dispose();
                     bool hevc = frame.Codec == (int)OMTCodec.HEVC;
-                    string list = decoderList ?? (hevc ? "hevc_cuvid,hevc" : "h264_cuvid,h264");
-                    dec = new VideoDecoder(list.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+                    dec = new VideoDecoder(decoderList != null
+                        ? decoderList.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        : VideoDecoder.Defaults(hevc));
                     decCodec = frame.Codec;
                     Stats.Decoder = dec.Name;
                     Stats.Codec = StreamStats.CodecName(frame.Codec);
@@ -374,11 +378,13 @@ internal sealed class InBridge : Bridge
                 var src = frame;
                 long td = Stopwatch.GetTimestamp();
                 double sendMs = 0;
-                bool ok = dec.Decode(frame.Data, frame.DataLength, frame.Timestamp, (ptr, stride, w, h, pts) =>
+                bool ok = dec.DecodeFrames(frame.Data, frame.DataLength, frame.Timestamp, f =>
                 {
+                    // NV12 straight to the OMT sender (VMX takes it as is): no 4:2:2 conversion
+                    var (ptr, stride, w, h) = nv12.From(f);
                     long ts0 = Stopwatch.GetTimestamp();
                     outFrame.Type = OMTFrameType.Video;
-                    outFrame.Codec = (int)OMTCodec.UYVY;
+                    outFrame.Codec = (int)OMTCodec.NV12;
                     outFrame.Width = w; outFrame.Height = h; outFrame.Stride = stride;
                     outFrame.FrameRateN = src.FrameRateN > 0 ? src.FrameRateN : 30;
                     outFrame.FrameRateD = src.FrameRateD > 0 ? src.FrameRateD : 1;
@@ -387,7 +393,7 @@ internal sealed class InBridge : Bridge
                     outFrame.Flags = OMTVideoFlags.None;
                     outFrame.Timestamp = src.Timestamp;
                     outFrame.Data = ptr;
-                    outFrame.DataLength = stride * h;
+                    outFrame.DataLength = stride * h * 3 / 2;
                     outFrame.FrameMetadata = IntPtr.Zero;
                     outFrame.FrameMetadataLength = 0;
                     send.Send(outFrame);
@@ -415,6 +421,64 @@ internal sealed class InBridge : Bridge
 }
 
 /// <summary>
+/// A decoded AVFrame as one contiguous NV12 buffer (Y rows, then interleaved UV rows, one stride),
+/// the layout OMTSend takes. NV12 from a GPU decoder is copied row block by row block; anything
+/// else (software yuv420p) is converted by swscale.
+/// </summary>
+internal sealed unsafe class Nv12Packer : IDisposable
+{
+    private readonly int nv12 = Av.PixFmt("nv12");
+    private IntPtr buf, sws;
+    private int size, swsFmt = -1, swsW, swsH;
+
+    public (IntPtr data, int stride, int w, int h) From(IntPtr f)
+    {
+        int w = Av.FrameWidth(f), h = Av.FrameHeight(f), fmt = Av.FrameFormat(f);
+        byte** d = Av.FrameData(f); int* l = Av.FrameLinesize(f);
+        int stride = (w + 63) & ~63;
+        int need = stride * h * 3 / 2;
+        if (size < need)
+        {
+            if (buf != IntPtr.Zero) Marshal.FreeHGlobal(buf);
+            buf = Marshal.AllocHGlobal(need); size = need;
+        }
+        byte* y = (byte*)buf, uv = y + stride * h;
+        if (fmt == nv12)
+        {
+            Rows(d[0], l[0], y, stride, w, h);
+            Rows(d[1], l[1], uv, stride, w, h / 2);
+        }
+        else
+        {
+            if (sws == IntPtr.Zero || fmt != swsFmt || w != swsW || h != swsH)
+            {
+                Av.SwsFree(sws);
+                sws = Av.SwsGet(w, h, fmt, w, h, nv12);
+                swsFmt = fmt; swsW = w; swsH = h;
+            }
+            byte** dst = stackalloc byte*[4];
+            int* ds = stackalloc int[4];
+            dst[0] = y; dst[1] = uv; dst[2] = dst[3] = null;
+            ds[0] = ds[1] = stride; ds[2] = ds[3] = 0;
+            Av.SwsScale(sws, d, l, h, dst, ds);
+        }
+        return (buf, stride, w, h);
+    }
+
+    static void Rows(byte* src, int srcStride, byte* dst, int dstStride, int bytes, int rows)
+    {
+        if (srcStride == dstStride) { Buffer.MemoryCopy(src, dst, (long)dstStride * rows, (long)dstStride * rows); return; }
+        for (int r = 0; r < rows; r++) Buffer.MemoryCopy(src + (long)r * srcStride, dst + (long)r * dstStride, dstStride, bytes);
+    }
+
+    public void Dispose()
+    {
+        Av.SwsFree(sws); sws = IntPtr.Zero;
+        if (buf != IntPtr.Zero) { Marshal.FreeHGlobal(buf); buf = IntPtr.Zero; }
+    }
+}
+
+/// <summary>
 /// One bridge per matching source, added as sources appear. "in *": every omtx source on the network
 /// (not this PC's own) into stock OMT. "out *": every stock OMT source on this PC (not the ones this
 /// process publishes) out as omtx. Each one only works while it has a viewer (see IdleSeconds).
@@ -425,6 +489,7 @@ internal sealed class AllBridge : Bridge
     private readonly Func<OMTAddress, bool> wanted;
     private readonly Func<string, Bridge> make;
     private readonly Dictionary<string, Bridge> bridges = new();
+    private readonly Dictionary<string, DateTime> lastSeen = new();
     public override string Kind => kind;
 
     private AllBridge(string kind, Func<OMTAddress, bool> wanted, Func<string, Bridge> make)
@@ -456,10 +521,12 @@ internal sealed class AllBridge : Bridge
         {
             while (Live)
             {
+                var now = DateTime.UtcNow;
                 foreach (var s in discovery.GetSources())
                 {
                     if (!wanted(s)) continue;
                     string name = s.ToString();
+                    lastSeen[name] = now;
                     lock (bridges)
                     {
                         if (bridges.TryGetValue(name, out var old) && !old.Finished) continue;
@@ -467,6 +534,16 @@ internal sealed class AllBridge : Bridge
                         bridges[name] = b;
                         b.Start();
                     }
+                }
+                // A source gone from the network for 10 s: stop its bridge, so its republished
+                // name goes away too instead of advertising a stream that can never come
+                foreach (var name in lastSeen.Where(x => now - x.Value > TimeSpan.FromSeconds(10)).Select(x => x.Key).ToList())
+                {
+                    lastSeen.Remove(name);
+                    Bridge gone;
+                    lock (bridges) { if (!bridges.Remove(name, out gone)) continue; }
+                    Log($"omtx {kind}: {name} left the network, bridge stopped");
+                    gone.Stop();
                 }
                 for (int i = 0; i < 20 && Live; i++) Thread.Sleep(100);
             }

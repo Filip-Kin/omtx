@@ -27,6 +27,9 @@ internal static class UiCmd
     static readonly object relaysLock = new();
     static readonly List<(string source, StreamStats stats)> relays = new();
     static OMTDiscovery discovery;
+    // The binary's own size and time (NativeAOT has no reliable module version id)
+    static readonly string BuildId = Environment.ProcessPath is string exe && File.Exists(exe)
+        ? $"{new FileInfo(exe).Length:x}-{File.GetLastWriteTimeUtc(exe).Ticks:x}" : Program.Version;
 
     public static int Run(Args a)
     {
@@ -271,6 +274,7 @@ internal static class UiCmd
     {
         w.WriteString("host", OMTAddress.SanitizeName(Environment.MachineName));
         w.WriteString("version", Program.Version);
+        w.WriteString("build", BuildId); // changes with every build: an open page reloads itself
         w.WriteNumber("now", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()); // lets a client measure clock offset
         string me = OMTAddress.SanitizeName(Environment.MachineName);
         w.WriteStartArray("sources");
@@ -512,14 +516,8 @@ internal static class UiCmd
             { Send(s, 409, "application/json", Json(w => w.WriteString("error", "Already running"))); return; }
             if (kind == "out")
             {
-                long ceiling = root.TryGetProperty("bitrateKbps", out var br) && br.TryGetInt32(out int kbps) && kbps >= 500 ? kbps * 1000L : 10_000_000;
                 bool hevc = root.TryGetProperty("codec", out var cd) && cd.GetString() is "hevc" or "h265";
-                OutOptions Options(string src)
-                {
-                    var o = new OutOptions { Source = src, CeilingBps = ceiling, Hevc = hevc };
-                    o.FloorBps = Math.Min(o.FloorBps, o.CeilingBps);
-                    return o;
-                }
+                OutOptions Options(string src) => new OutOptions { Source = src, Hevc = hevc };
                 b = source == "*" ? AllBridge.Out(Options) : new OutBridge(Options(source));
             }
             else

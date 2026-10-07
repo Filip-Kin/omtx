@@ -38,6 +38,7 @@ class VideoEncoder(
     private var config: ByteArray? = null
     @Volatile private var running = false
     @Volatile var bitrate: Int = initialBitrate
+    private var maxBps = Int.MAX_VALUE
         private set
     var encoderName: String = ""
         private set
@@ -97,7 +98,7 @@ class VideoEncoder(
     fun setBitrate(bps: Int) = handler.post {
         if (!running || bps == bitrate) return@post
         try {
-            mc?.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bps) })
+            mc?.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, minOf(bps, maxBps)) })
             bitrate = bps
         } catch (e: Exception) { Log.w(TAG, "bitrate: $e") }
     }
@@ -116,10 +117,11 @@ class VideoEncoder(
     private fun buildFormat(caps: CodecCapabilities?, iFrameIntervalS: Int, minimal: Boolean): MediaFormat {
         val f = MediaFormat.createVideoFormat(mime, width, height)
         f.setInteger(MediaFormat.KEY_COLOR_FORMAT, CodecCapabilities.COLOR_FormatSurface)
-        f.setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+        // The ceiling is above what any hardware encoder takes (configure() would fail): use its maximum
+        caps?.videoCapabilities?.bitrateRange?.upper?.let { maxBps = it }
+        f.setInteger(MediaFormat.KEY_BIT_RATE, minOf(bitrate, maxBps))
         f.setInteger(MediaFormat.KEY_FRAME_RATE, fps)
-        // VBR: the bitrate is a ceiling the picture may use, not a rate to fill. With the 50 Mbps
-        // ceiling, CBR would send 50 Mbps of padding for a still shot.
+        // VBR at the encoder's maximum: as many bits as the picture can use.
         val enc = caps?.encoderCapabilities
         val vbr = enc?.isBitrateModeSupported(EncoderCapabilities.BITRATE_MODE_VBR) != false
         f.setInteger(

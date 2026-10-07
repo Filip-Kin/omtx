@@ -18,12 +18,13 @@ internal static class Program
       or no SDL2/libavcodec, plays through ffplay instead (audio clock, more latency).
       <source> is a name ""HOST (Name)"", omtx://host:port or host:port.
 
-  omtx out [<stock OMT source>] [--name NAME] [--codec h264|hevc] [--bitrate KBPS] [--min KBPS]
+  omtx out [<stock OMT source>] [--name NAME] [--codec h264|hevc]
            [--encoder LIST] [--enc-opts K=V,...] [--pixfmt nv12|bgra] [--intra-refresh] [--vbv FRAMES] [--ffmpeg DIR] [--stats]
       Re-encode a stock OMT source (e.g. a vMix output) as omtx. With no source, every OMT source
       on this PC. Each one connects and encodes only while an omtx receiver watches it. Default
       encoders tried in order:
-      h264_nvenc, h264_qsv, libx264, h264_amf. Default 10000 kbps ceiling, 3000 kbps floor.
+      h264_nvenc, h264_qsv, libx264, h264_amf. Constant quality, no bitrate cap; stepped down
+      (to 3 Mbps at the lowest) only when the network backs up.
 
   omtx in [<omtx source> ...] [--decoder LIST] [--ffmpeg DIR] [--stats]
       Decode omtx sources (e.g. phones) and republish each as a stock OMT source for vMix/OBS.
@@ -40,7 +41,7 @@ internal static class Program
       strip is the wall clock in ms (16 bits) for latency checks; --noise fills the top third with
       fresh noise every frame, --texture with the same noise every frame.
 
-  omtx probe <source> [--seconds 10] [--strip X0,X1,Y] [--clock http://HOST:6390] [--ffmpeg DIR]
+  omtx probe <source> [--seconds 10] [--strip X0,X1,Y] [--clock http://HOST:6390] [--decoder LIST] [--ffmpeg DIR]
       Latency of a source carrying the bars clock strip, read after decode in this process (no
       display). --strip locates the strip when bars sits inside a vMix layout; --clock corrects for
       the bars machine's clock through its omtx ui.

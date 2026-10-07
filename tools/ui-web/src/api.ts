@@ -82,7 +82,7 @@ export const api = {
 };
 
 export type NewBridge =
-  | { kind: "out"; source: string; sourceId?: string; bitrateKbps: number; codec: "h264" | "hevc" }
+  | { kind: "out"; source: string; sourceId?: string; codec: "h264" | "hevc" }
   | { kind: "in"; source: string; sourceId?: string };
 
 async function errorText(res: Response): Promise<string> {
@@ -142,6 +142,7 @@ export function useLive(): Live {
     let retry: ReturnType<typeof setTimeout> | null = null;
     let delay = 1000;
     let disposed = false;
+    let build: string | null = null;
 
     const connect = () => {
       if (disposed) return;
@@ -152,7 +153,12 @@ export function useLive(): Live {
         lastEvent = Date.now();
         delay = 1000;
         try {
-          const s = JSON.parse((ev as MessageEvent).data) as ServerState;
+          const s = JSON.parse((ev as MessageEvent).data) as ServerState & { build?: string };
+          // omtx was updated and restarted under this open page: load the new page
+          if (s.build) {
+            if (build && build !== s.build) { location.reload(); return; }
+            build = s.build;
+          }
           setState({
             host: s.host ?? "",
             version: s.version ?? "",

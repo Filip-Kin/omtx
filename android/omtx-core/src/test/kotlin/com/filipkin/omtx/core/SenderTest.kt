@@ -152,8 +152,8 @@ class SenderTest {
         val a = Client(port)
         a.send(OmtStrings.SUBSCRIBE_VIDEO)
         a.send("<OMTSettings Quality=\"Low\" />")
-        waitFor { sender.ceilingBps == 4_000_000 }
-        assertEquals(4_000_000, sender.targetBps)
+        waitFor { sender.ceilingBps == 8_000_000 }
+        assertEquals(8_000_000, sender.targetBps)
         a.send("<OMTSettings Quality=\"Default\" />")
         waitFor { sender.ceilingBps == BitrateController.DEFAULT_CEILING_BPS }
     }

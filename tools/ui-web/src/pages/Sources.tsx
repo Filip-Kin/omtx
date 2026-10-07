@@ -33,7 +33,7 @@ function Tile({ s, bridged }: { s: Source; bridged: boolean }) {
     try {
       await startBridge(
         s.type === "omt"
-          ? { kind: "out", source: s.name, sourceId: s.id, bitrateKbps: 10000, codec: "h264" }
+          ? { kind: "out", source: s.name, sourceId: s.id, codec: "h264" }
           : { kind: "in", source: s.name, sourceId: s.id },
       );
     } catch (e) {

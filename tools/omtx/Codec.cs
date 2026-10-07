@@ -79,13 +79,20 @@ internal sealed unsafe class VideoEncoder : IDisposable
         Av.OptSet(ctx, "color_trc", cs);
         Av.OptSet(ctx, "color_range", "tv");
         Av.OptSetInt(ctx, "g", Math.Max(1, FpsN / Math.Max(1, FpsD)) * 600); // keyframes on demand, not on a timer
+        // Quality first: x264/x265 encode at constant quality (CRF) and NVENC at constant quality
+        // (VBR + cq), each capped by the bitrate as a VBV ceiling. A still picture costs little and
+        // motion gets what it needs up to the ceiling, instead of every frame filling a fixed rate.
+        quality = name is "libx264" or "libx265" || name.Contains("nvenc");
+        if (name == "libx264") Av.OptSet(ctx, "crf", "18");
+        else if (name == "libx265") Av.OptSet(ctx, "crf", "20");
         SetRate(bitrate);
 
         if (name.Contains("nvenc"))
         {
             if (Av.OptSet(ctx, "preset", "p1") < 0) Av.OptSet(ctx, "preset", "llhp"); // FFmpeg 4.x names
             Av.OptSet(ctx, "tune", "ull");
-            Av.OptSet(ctx, "rc", "cbr");
+            Av.OptSet(ctx, "rc", "vbr");
+            Av.OptSetInt(ctx, "cq", 21);
             Av.OptSetInt(ctx, "zerolatency", 1);
             Av.OptSetInt(ctx, "delay", 0);
             Av.OptSetInt(ctx, "forced-idr", 1);
@@ -130,12 +137,13 @@ internal sealed unsafe class VideoEncoder : IDisposable
     }
 
     public long Bitrate => bitrate;
+    private bool quality;
 
     /// <summary>Change the target bitrate. Takes effect on the next frame (NVENC and x264 reconfigure in place).</summary>
     public void SetRate(long bps)
     {
         bitrate = bps;
-        Av.OptSetInt(ctx, "b", bps);
+        if (!quality) Av.OptSetInt(ctx, "b", bps);
         Av.OptSetInt(ctx, "maxrate", bps);
         long fps = Math.Max(1, FpsN / Math.Max(1, FpsD));
         Av.OptSetInt(ctx, "bufsize", (long)(bps * vbvFrames / fps));
@@ -254,6 +262,10 @@ internal sealed unsafe class VideoDecoder : IDisposable
 {
     public readonly string Name;
     private IntPtr ctx, frame, pkt, sws;
+    private IntPtr hwDevice, swFrame;
+    private int hwFmt = -1;
+    /// <summary>Last picture: ms in libavcodec (send to receive) and copying it back from the GPU.</summary>
+    public double LastDecodeMs, LastTransferMs;
     private int swsFmt = -1, swsW, swsH;
     private readonly int uyvy;
     private byte[] packetBuf = new byte[1 << 20];
@@ -261,24 +273,54 @@ internal sealed unsafe class VideoDecoder : IDisposable
     private IntPtr outBuf = IntPtr.Zero;
     private int outSize;
 
+    /// <summary>
+    /// Decoders to try, best first: NVIDIA's own, then the platform's GPU decode through FFmpeg's
+    /// hwaccel (D3D11 on Windows: AMD, Intel and NVIDIA; VA-API on Linux), then software. The phone
+    /// sends one slice per frame, so the low-latency software decoder runs on one core: 1080p60 at
+    /// 25 Mbps took ~19 ms a frame on the laptop, over the 16.7 ms budget.
+    /// </summary>
+    public static string[] Defaults(bool hevc)
+    {
+        string c = hevc ? "hevc" : "h264";
+        string hw = OperatingSystem.IsWindows() ? "d3d11va" : OperatingSystem.IsMacOS() ? "videotoolbox" : "vaapi";
+        return new[] { c + "_cuvid", c + ":" + hw, c };
+    }
+
     /// <param name="lowLatency">Slice threads only (no added frame of delay). False for monitors:
     /// frame threads too, so a CPU decode keeps up with 1080p60 HEVC.</param>
     public VideoDecoder(IEnumerable<string> decoders, bool lowLatency = true)
     {
         uyvy = Av.PixFmt("uyvy422");
         var failures = new List<string>();
-        foreach (var name in decoders)
+        foreach (var spec in decoders)
         {
+            // "h264:d3d11va" = the h264 decoder with a hardware device (FFmpeg hwaccel)
+            var parts = spec.Split(':', 2);
+            string name = parts[0], hw = parts.Length > 1 ? parts[1] : null;
             IntPtr codec = Av.FindDecoder(name);
             if (codec == IntPtr.Zero) { failures.Add(name + ": not in this FFmpeg"); continue; }
+            if (hw != null)
+            {
+                hwDevice = Av.HwDeviceCreate(hw);
+                if (hwDevice == IntPtr.Zero) { failures.Add(spec + ": no device"); continue; }
+            }
             ctx = Av.AllocContext(codec);
+            if (hw != null && !Av.SetHwDevice(ctx, hwDevice))
+            {
+                failures.Add(spec + ": hw_device_ctx not found"); Av.FreeContext(ref ctx); Av.BufferUnref(ref hwDevice); continue;
+            }
             Av.OptSet(ctx, "flags", "low_delay");
             Av.OptSet(ctx, "thread_type", lowLatency ? "slice" : "frame+slice");
             Av.OptSetInt(ctx, "threads", 0);
             if (name.Contains("cuvid")) { Av.OptSetInt(ctx, "surfaces", 4); Av.OptSetInt(ctx, "delay", 0); }
             int r = Av.Open(ctx, codec);
-            if (r < 0) { failures.Add(name + ": " + Av.Err(r)); Av.FreeContext(ref ctx); continue; }
-            Name = name;
+            if (r < 0) { failures.Add(spec + ": " + Av.Err(r)); Av.FreeContext(ref ctx); Av.BufferUnref(ref hwDevice); continue; }
+            Name = spec;
+            if (hw != null)
+            {
+                hwFmt = Av.PixFmt(hw switch { "d3d11va" => "d3d11", "dxva2" => "dxva2_vld", "vaapi" => "vaapi", "cuda" => "cuda", "qsv" => "qsv", _ => hw });
+                swFrame = Av.FrameAlloc();
+            }
             break;
         }
         if (ctx == IntPtr.Zero) throw new InvalidOperationException("No usable decoder. " + string.Join("; ", failures));
@@ -311,6 +353,7 @@ internal sealed unsafe class VideoDecoder : IDisposable
         Av.PacketSize(pkt) = length;
         Av.PacketPts(pkt) = timestamp;
         Av.PacketDts(pkt) = timestamp;
+        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         int r = Av.SendPacket(ctx, pkt);
         Av.PacketData(pkt) = IntPtr.Zero;
         Av.PacketSize(pkt) = 0;
@@ -321,6 +364,19 @@ internal sealed unsafe class VideoDecoder : IDisposable
             r = Av.ReceiveFrame(ctx, frame);
             if (r == Av.AVERROR_EAGAIN || r == Av.AVERROR_EOF) break;
             if (r < 0) { ok = false; break; }
+            long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
+            LastDecodeMs = (t1 - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+            LastTransferMs = 0;
+            if (hwFmt >= 0 && Av.FrameFormat(frame) == hwFmt)
+            {
+                // GPU picture: copy it to system memory (NV12) for the caller
+                Av.FrameUnref(swFrame);
+                if (Av.HwTransfer(swFrame, frame) < 0) { ok = false; break; }
+                LastTransferMs = (System.Diagnostics.Stopwatch.GetTimestamp() - t1) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
+                Av.FramePts(swFrame) = Av.FramePts(frame);
+                onFrame(swFrame);
+                continue;
+            }
             onFrame(frame);
         }
         return ok;
@@ -356,8 +412,10 @@ internal sealed unsafe class VideoDecoder : IDisposable
     {
         Av.SwsFree(sws); sws = IntPtr.Zero;
         Av.FrameFree(ref frame);
+        Av.FrameFree(ref swFrame);
         Av.PacketFree(ref pkt);
         Av.FreeContext(ref ctx);
+        Av.BufferUnref(ref hwDevice);
         if (packetPin.IsAllocated) packetPin.Free();
         if (outBuf != IntPtr.Zero) { Marshal.FreeHGlobal(outBuf); outBuf = IntPtr.Zero; }
     }

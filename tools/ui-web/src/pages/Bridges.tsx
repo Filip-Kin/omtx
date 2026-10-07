@@ -150,7 +150,6 @@ function BridgeCard({ b }: { b: Bridge }) {
 function NewBridge({ state }: { state: ServerState }) {
   const [kind, setKind] = useState<"out" | "in">("out");
   const [source, setSource] = useState("");
-  const [mbps, setMbps] = useState("10");
   const [codec, setCodec] = useState<"h264" | "hevc">("h264");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -165,9 +164,7 @@ function NewBridge({ state }: { state: ServerState }) {
     if (!values.includes(source)) setSource(values[0] ?? "");
   }, [values.join("\n"), source]);
 
-  const rate = Number(mbps);
-  const rateOk = Number.isFinite(rate) && rate >= 0.5 && rate <= 200;
-  const ready = !!source && (kind === "in" || rateOk) && !busy;
+  const ready = !!source && !busy;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -177,7 +174,7 @@ function NewBridge({ state }: { state: ServerState }) {
     try {
       await startBridge(
         kind === "out"
-          ? { kind, source, bitrateKbps: Math.round(rate * 1000), codec }
+          ? { kind, source, codec }
           : { kind, source },
       );
     } catch (err) {
@@ -214,19 +211,6 @@ function NewBridge({ state }: { state: ServerState }) {
       </label>
       {kind === "out" ? (
         <div className="field-row">
-          <label className="field">
-            <span>Bitrate (Mbps)</span>
-            <input
-              type="number"
-              inputMode="decimal"
-              min={0.5}
-              max={200}
-              step={0.5}
-              value={mbps}
-              onChange={(e) => setMbps(e.target.value)}
-              aria-invalid={!rateOk}
-            />
-          </label>
           <label className="field">
             <span>Codec</span>
             <select value={codec} onChange={(e) => setCodec(e.target.value as "h264" | "hevc")}>

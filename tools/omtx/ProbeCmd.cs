@@ -26,6 +26,7 @@ internal static class ProbeCmd
         var wire = new List<int>(); var shown = new List<int>(); int bad = 0;
         string codec = "";
         var gaps = new List<int>(); long lastShown = 0;
+        var decMs = new List<int>(); var avMs = new List<int>(); var xferMs = new List<int>();
         var end = DateTime.UtcNow.AddSeconds(seconds);
         int Read(IntPtr p, int stride, int w, int h)
         {
@@ -38,6 +39,15 @@ internal static class ProbeCmd
                 int x = (int)(x0 + (b + 0.5) * (x1 - x0) / 16);
                 bits = (bits << 1) | (row[x * 2 + 1] > 128 ? 1 : 0); // UYVY: luma on odd bytes
             }
+            return bits;
+        }
+        int ReadY(byte* row0, int stride, int w, int h)
+        {
+            int x0 = strip.Length == 3 ? strip[0] : 0, x1 = strip.Length == 3 ? strip[1] : w;
+            int y = strip.Length == 3 ? strip[2] : h - h / 24;
+            byte* row = row0 + (long)y * stride;
+            int bits = 0;
+            for (int b = 0; b < 16; b++) bits = (bits << 1) | (row[(int)(x0 + (b + 0.5) * (x1 - x0) / 16)] > 128 ? 1 : 0);
             return bits;
         }
         int Lat(int bits) => (int)(((long)(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + offset) - bits) & 0xFFFF);
@@ -57,12 +67,19 @@ internal static class ProbeCmd
             {
                 codec = StreamStats.CodecName(frame.Codec);
                 long arrived = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
-                dec ??= new VideoDecoder(frame.Codec == (int)OMTCodec.HEVC ? new[] { "hevc" } : new[] { "h264" });
-                if (!dec.Decode(frame.Data, frame.DataLength, frame.Timestamp, (p, stride, w, h, pts) =>
+                var t0 = System.Diagnostics.Stopwatch.StartNew();
+                if (dec == null)
+                {
+                    dec = new VideoDecoder(a.Has("--decoder") ? a.List("--decoder", "") : VideoDecoder.Defaults(frame.Codec == (int)OMTCodec.HEVC));
+                    Console.Error.WriteLine("omtx probe: decoder " + dec.Name);
+                }
+                if (!dec.DecodeFrames(frame.Data, frame.DataLength, frame.Timestamp, f =>
                     {
-                        int bits = Read(p, stride, w, h);
+                        decMs.Add((int)Math.Round(t0.Elapsed.TotalMilliseconds));
+                        avMs.Add((int)Math.Round(dec.LastDecodeMs)); xferMs.Add((int)Math.Round(dec.LastTransferMs));
+                        // luma straight from plane 0 (yuv420p and NV12 alike): no conversion in the measurement
+                        int bits = ReadY(Av.FrameData(f)[0], Av.FrameLinesize(f)[0], Av.FrameWidth(f), Av.FrameHeight(f));
                         Add(shown, Lat(bits)); Shown();
-                        // wire time of the frame we just decoded: decode time is now - arrived
                         Add(wire, (int)((((long)(arrived + offset)) - bits) & 0xFFFF));
                     }))
                     recv.RequestKeyframe();
@@ -78,6 +95,7 @@ internal static class ProbeCmd
         Console.WriteLine($"{a.Positional[0]}  {codec}  clock offset {offset:F0} ms  bad {bad}");
         Print("wire   ", wire);
         Print("decoded", shown);
+        if (decMs.Count > 0) { Print("decode ", decMs); Print("  libav", avMs); Print("  gpu->ram", xferMs); }
         if (gaps.Count > 0)
             Console.WriteLine($"  freezes >100 ms {gaps.Count(g => g > 100)}  frozen {gaps.Where(g => g > 100).Sum()} ms  longest {gaps.Max()} ms  dropped {recv.GetVideoStatistics().FramesDropped}");
         return shown.Count > 0 ? 0 : 1;

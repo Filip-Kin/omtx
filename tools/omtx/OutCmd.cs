@@ -18,13 +18,11 @@ internal static class OutCmd
             Name = name,
             Hevc = hevc,
             Encoders = a.Has("--encoder") ? a.List("--encoder", "") : null,
-            CeilingBps = a.Int("--bitrate", 10000) * 1000L,
             IntraRefresh = a.Has("--intra-refresh"),
             Bgra = a.Get("--pixfmt", "nv12").ToLowerInvariant() == "bgra",
             VbvFrames = a.Dbl("--vbv", 1.0),
             EncoderOptions = a.List("--enc-opts", "").Select(kv => kv.Split('=', 2)).Where(x => x.Length == 2)
                               .Select(x => (x[0].Trim(), x[1].Trim())).ToList(),
-            FloorBps = Math.Min(a.Int("--bitrate", 10000), a.Int("--min", 3000)) * 1000L,
         };
         // No source: every OMT source on this PC (each encodes only while watched)
         Bridge bridge = a.Positional.Count > 0 ? new OutBridge(Options(a.Positional[0], a.Get("--name")))

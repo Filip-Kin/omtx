@@ -60,8 +60,8 @@ These are what make a long-GOP stream survive Wi-Fi.
    After 2 s with no drop and at most 1 frame in flight, `B = min(ceiling, 1.05 * B)`.
 4. **Preview requests are ignored.** `<OMTSettings Preview="true" />` has no meaning for
    H.264/HEVC. The sender keeps sending full frames.
-5. **Suggested quality.** `<OMTSettings Quality="..."/>` may cap the ceiling: Low 4 Mbps,
-   Medium 8 Mbps, High 15 Mbps, Default leaves the sender's own ceiling.
+5. **Suggested quality.** `<OMTSettings Quality="..."/>` may cap the ceiling: Low 8 Mbps,
+   Medium 15 Mbps; High and Default leave the sender uncapped.
 
 ## 5. Discovery
 
