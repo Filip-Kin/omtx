@@ -235,6 +235,7 @@ internal static class UiCmd
         if (req.Method == "GET" && p.StartsWith("/api/snapshot/") && p.EndsWith(".jpg")) { Snapshot(req, s, p[14..^4]); return; }
         if (req.Method == "GET" && p.StartsWith("/api/stream/")) { Stream(s, p[12..]); return; }
         if (req.Method == "POST" && p == "/api/bridges") { CreateBridge(req, s); return; }
+        if (req.Method == "POST" && p == "/api/settings") { SetSettings(req, s); return; }
         if (req.Method == "DELETE" && p.StartsWith("/api/bridges/")) { DeleteBridge(s, p[13..]); return; }
         if (req.Method == "GET") { Static(s, p); return; }
         Send(s, 404, "application/json", Json(w => w.WriteString("error", "Not found")));
@@ -275,6 +276,9 @@ internal static class UiCmd
         w.WriteString("host", OMTAddress.SanitizeName(Environment.MachineName));
         w.WriteString("version", Program.Version);
         w.WriteString("build", BuildId); // changes with every build: an open page reloads itself
+        w.WriteStartObject("settings");
+        w.WriteNumber("outMaxFps", Settings.OutMaxFps);
+        w.WriteEndObject();
         w.WriteNumber("now", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()); // lets a client measure clock offset
         string me = OMTAddress.SanitizeName(Environment.MachineName);
         w.WriteStartArray("sources");
@@ -494,6 +498,19 @@ internal static class UiCmd
     }
 
     // ---- bridges ----
+
+    static void SetSettings(Request req, Stream s)
+    {
+        try
+        {
+            using var doc = JsonDocument.Parse(req.Body);
+            if (doc.RootElement.TryGetProperty("outMaxFps", out var v) && v.TryGetInt32(out int n) && n is 0 or >= 1 and <= 240)
+                Settings.OutMaxFps = n;
+            else { Send(s, 400, "application/json", Json(w => w.WriteString("error", "outMaxFps"))); return; }
+        }
+        catch { Send(s, 400, "application/json", Json(w => w.WriteString("error", "JSON"))); return; }
+        Send(s, 204, "application/json", Array.Empty<byte>());
+    }
 
     static void CreateBridge(Request req, Stream s)
     {

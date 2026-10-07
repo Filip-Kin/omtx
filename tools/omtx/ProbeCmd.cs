@@ -70,7 +70,7 @@ internal static class ProbeCmd
                 var t0 = System.Diagnostics.Stopwatch.StartNew();
                 if (dec == null)
                 {
-                    dec = new VideoDecoder(a.Has("--decoder") ? a.List("--decoder", "") : VideoDecoder.Defaults(frame.Codec == (int)OMTCodec.HEVC));
+                    dec = new VideoDecoder(a.Has("--decoder") ? a.List("--decoder", "") : VideoDecoder.Defaults(frame.Codec == (int)OMTCodec.HEVC)); 
                     Console.Error.WriteLine("omtx probe: decoder " + dec.Name);
                 }
                 if (!dec.DecodeFrames(frame.Data, frame.DataLength, frame.Timestamp, f =>

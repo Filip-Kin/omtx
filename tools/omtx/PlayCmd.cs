@@ -212,7 +212,7 @@ internal static class PlayCmd
                 if (dec == null || decCodec != frame.Codec)
                 {
                     dec?.Dispose();
-                    dec = new VideoDecoder(a.Has("--decoder") ? a.List("--decoder", "") : VideoDecoder.Defaults(frame.Codec == (int)OMTCodec.HEVC));
+                    dec = new VideoDecoder(a.Has("--decoder") ? a.List("--decoder", "") : VideoDecoder.Defaults(frame.Codec == (int)OMTCodec.HEVC)); 
                     decCodec = frame.Codec; waitKey = true;
                     Console.Error.WriteLine($"omtx play: {StreamStats.CodecName(frame.Codec)} {frame.Width}x{frame.Height} decoder {dec.Name}");
                 }

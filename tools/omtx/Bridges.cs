@@ -127,6 +127,7 @@ internal sealed class OutBridge : Bridge
         var frame = new OMTMediaFrame();
         var waitTimer = Stopwatch.StartNew();
         bool seenVideo = false;
+        long frameIndex = 0;
         try
         {
             while (Live)
@@ -174,6 +175,13 @@ internal sealed class OutBridge : Bridge
                 Stats.FrameRate = $"{frame.FrameRateN}/{frame.FrameRateD}";
                 if (send.Connections == 0) { State = "running"; continue; } // nobody watching: skip the encoder
 
+                // Max frame rate (ui setting, default 30): a 60 fps vMix output at 30 goes out as every
+                // second frame. Halves the decode on the receivers, the encode and the bitrate.
+                int srcN = frame.FrameRateN > 0 ? frame.FrameRateN : 30, srcD = frame.FrameRateD > 0 ? frame.FrameRateD : 1;
+                int maxFps = Settings.OutMaxFps;
+                int every = maxFps > 0 ? (int)Math.Ceiling((double)srcN / srcD / maxFps - 0.01) : 1;
+                if (every > 1 && (frameIndex++ % every) != 0) continue;
+
                 int size = frame.Stride * frame.Height;
                 if (!pool.TryTake(out var job) || job.Size < size)
                 {
@@ -182,7 +190,7 @@ internal sealed class OutBridge : Bridge
                 }
                 unsafe { Buffer.MemoryCopy((void*)frame.Data, (void*)job.Data, job.Size, size); }
                 job.Stride = frame.Stride; job.Width = frame.Width; job.Height = frame.Height; job.Fmt = fmt;
-                job.FpsN = frame.FrameRateN > 0 ? frame.FrameRateN : 30; job.FpsD = frame.FrameRateD > 0 ? frame.FrameRateD : 1;
+                job.FpsN = srcN; job.FpsD = srcD * Math.Max(1, every);
                 job.Aspect = frame.AspectRatio > 0 ? frame.AspectRatio : (float)frame.Width / frame.Height;
                 job.ColorSpace = frame.ColorSpace; job.Timestamp = frame.Timestamp; job.RecvMs = recvMs;
                 queue.Add(job);

@@ -66,9 +66,15 @@ export interface Monitor {
   stats?: Stats | null;
 }
 
+export interface Settings {
+  /** highest frame rate an out bridge encodes; 0 = the source's own */
+  outMaxFps: number;
+}
+
 export interface ServerState {
   host: string;
   version: string;
+  settings?: Settings;
   sources: Source[];
   bridges: Bridge[];
   monitors: Monitor[];
@@ -110,6 +116,20 @@ export async function startBridge(b: NewBridge): Promise<string> {
   if (!res.ok) throw new Error(await errorText(res));
   const body = await res.json().catch(() => ({}));
   return body.id ?? "";
+}
+
+export async function saveSettings(s: Partial<Settings>): Promise<void> {
+  let res: Response;
+  try {
+    res = await fetch("api/settings", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(s),
+    });
+  } catch {
+    throw new Error("No connection");
+  }
+  if (!res.ok) throw new Error(await errorText(res));
 }
 
 export async function stopBridge(id: string): Promise<void> {
@@ -163,6 +183,7 @@ export function useLive(): Live {
           setState({
             host: s.host ?? "",
             version: s.version ?? "",
+            settings: s.settings,
             sources: s.sources ?? [],
             bridges: s.bridges ?? [],
             monitors: s.monitors ?? [],

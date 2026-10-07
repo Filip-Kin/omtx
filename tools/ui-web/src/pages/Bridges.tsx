@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { startBridge, stopBridge, type Bridge, type ServerState, type Stats } from "../api";
+import { saveSettings, startBridge, stopBridge, type Bridge, type ServerState, type Stats } from "../api";
 import * as f from "../format";
 
 const STATE: Record<string, string> = {
@@ -51,6 +51,33 @@ function frameTime(s: Stats | null): string | null {
   return parts.length ? f.ms(parts.reduce((a, b) => a + b, 0)) : null;
 }
 
+const FPS_OPTIONS: [number, string][] = [[30, "30 fps"], [0, "Source"]];
+
+function MaxFps({ state, onError }: { state: ServerState; onError: (e: string | null) => void }) {
+  const value = state.settings?.outMaxFps ?? 30;
+  const change = async (v: number) => {
+    onError(null);
+    try {
+      await saveSettings({ outMaxFps: v });
+    } catch (e) {
+      onError((e as Error).message);
+    }
+  };
+  return (
+    <label className="inline-field">
+      <span>Max frame rate</span>
+      <select value={value} onChange={(e) => change(Number(e.target.value))}>
+        {FPS_OPTIONS.some(([v]) => v === value) ? null : <option value={value}>{value} fps</option>}
+        {FPS_OPTIONS.map(([v, l]) => (
+          <option key={v} value={v}>
+            {l}
+          </option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 function Section({ kind, state }: { kind: "out" | "in"; state: ServerState }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -81,6 +108,7 @@ function Section({ kind, state }: { kind: "out" | "in"; state: ServerState }) {
         <button className="switch" role="switch" aria-checked={!!auto} onClick={toggle} disabled={busy}>
           Automatic
         </button>
+        {kind === "out" ? <MaxFps state={state} onError={setError} /> : null}
       </div>
       {error ? (
         <div className="error" role="alert">

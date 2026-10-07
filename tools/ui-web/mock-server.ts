@@ -91,6 +91,7 @@ const CATALOG: Omit<Source, "id" | "addresses" | "port">[] = [
 let sources: Source[] = [];
 let bridges: Bridge[] = [];
 let offline = false;
+let outMaxFps = 30;
 let nextBridge = 1;
 const watchers = new Map<string, number>(); // sourceId -> open MJPEG streams
 
@@ -148,7 +149,8 @@ function tickBridges() {
       const broken = brokenStream && b.kind === "out" && i === matches.length - 1;
       const st = broken
         ? { state: "error", error: "No usable encoder. h264_nvenc: Cannot load nvcuda.dll; h264_qsv: unsupported device" }
-        : watched ? { ...statsFor(b.kind, { kbps: b.bitrateKbps, codec: b.codec }), state: "running" }
+        : watched ? { ...statsFor(b.kind, { kbps: b.bitrateKbps, codec: b.codec }), state: "running",
+                      ...(b.kind === "out" && outMaxFps === 30 ? { fps: jitter(29.97, 0.01), frameRate: "30000/1001" } : {}) }
         : { state: "idle", fps: 0, mbps: 0, width: 1920, height: 1080, codec: "H264", receivers: 0, keyframes: 0, drops: 0 };
       return { source: c.name, publishedAs: b.kind === "out" ? `${c.label} omtx` : `${HOST} (${c.label})`, stats: st };
     });
@@ -170,7 +172,7 @@ function seedBridges(mode: string) {
 function snapshot() {
   tickBridges();
   return {
-    host: HOST, version: "0.1.0",
+    host: HOST, version: "0.1.0", settings: { outMaxFps },
     sources, bridges: bridges.map(({ bitrateKbps, codec, started, ...b }) => b),
     monitors: [...watchers].filter(([, n]) => n > 0).map(([sourceId]) => ({ sourceId, stats: statsFor("monitor") })),
   };
@@ -283,6 +285,12 @@ Bun.serve({
       const b = makeBridge(body.kind, body.source, { kbps: body.bitrateKbps, codec: body.codec });
       bridges.push(b);
       return json({ id: b.id });
+    }
+
+    if (p === "/api/settings" && req.method === "POST") {
+      const body = await req.json().catch(() => null);
+      if (body && Number.isInteger(body.outMaxFps)) outMaxFps = body.outMaxFps;
+      return new Response(null, { status: 204 });
     }
 
     m = p.match(/^\/api\/bridges\/([^/]+)$/);
