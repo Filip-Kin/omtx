@@ -10,7 +10,7 @@ internal sealed unsafe class SdlWindow : IDisposable
 {
     const uint INIT_VIDEO = 0x20, WINDOW_SHOWN = 0x4, WINDOW_BORDERLESS = 0x10, WINDOW_FULLSCREEN_DESKTOP = 0x1001, WINDOW_ALWAYS_ON_TOP = 0x8000;
     const uint RENDERER_ACCELERATED = 0x2, RENDERER_PRESENTVSYNC = 0x4;
-    const uint PIXELFORMAT_IYUV = 0x56555949;
+    const uint PIXELFORMAT_IYUV = 0x56555949, PIXELFORMAT_UYVY = 0x59565955;
     const int TEXTUREACCESS_STREAMING = 1, WINDOWPOS_UNDEFINED = 0x1FFF0000;
     const uint QUIT = 0x100, KEYDOWN = 0x300;
 
@@ -27,6 +27,7 @@ internal sealed unsafe class SdlWindow : IDisposable
     static delegate* unmanaged[Cdecl]<IntPtr, uint, int, int, int, IntPtr> p_CreateTexture;
     static delegate* unmanaged[Cdecl]<IntPtr, void> p_DestroyTexture;
     static delegate* unmanaged[Cdecl]<IntPtr, void*, byte*, int, byte*, int, byte*, int, int> p_UpdateYUVTexture;
+    static delegate* unmanaged[Cdecl]<IntPtr, void*, void*, int, int> p_UpdateTexture;
     static delegate* unmanaged[Cdecl]<IntPtr, int> p_RenderClear;
     static delegate* unmanaged[Cdecl]<IntPtr, IntPtr, void*, void*, int> p_RenderCopy;
     static delegate* unmanaged[Cdecl]<IntPtr, void> p_RenderPresent;
@@ -54,6 +55,7 @@ internal sealed unsafe class SdlWindow : IDisposable
         p_CreateTexture = (delegate* unmanaged[Cdecl]<IntPtr, uint, int, int, int, IntPtr>)G("SDL_CreateTexture");
         p_DestroyTexture = (delegate* unmanaged[Cdecl]<IntPtr, void>)G("SDL_DestroyTexture");
         p_UpdateYUVTexture = (delegate* unmanaged[Cdecl]<IntPtr, void*, byte*, int, byte*, int, byte*, int, int>)G("SDL_UpdateYUVTexture");
+        p_UpdateTexture = (delegate* unmanaged[Cdecl]<IntPtr, void*, void*, int, int>)G("SDL_UpdateTexture");
         p_RenderClear = (delegate* unmanaged[Cdecl]<IntPtr, int>)G("SDL_RenderClear");
         p_RenderCopy = (delegate* unmanaged[Cdecl]<IntPtr, IntPtr, void*, void*, int>)G("SDL_RenderCopy");
         p_RenderPresent = (delegate* unmanaged[Cdecl]<IntPtr, void>)G("SDL_RenderPresent");
@@ -69,6 +71,7 @@ internal sealed unsafe class SdlWindow : IDisposable
 
     IntPtr win, ren, tex;
     int texW, texH;
+    uint texFmt;
 
     /// <param name="window">"WxH+X+Y" for a borderless window, null for fullscreen</param>
     public SdlWindow(string title, string window, bool vsync)
@@ -101,15 +104,25 @@ internal sealed unsafe class SdlWindow : IDisposable
     /// <summary>Copies one I420 picture into the texture (shown on the next Present). Planes are Y, U, V with their pitches.</summary>
     public void Upload(byte* y, int yp, byte* u, int up, byte* v, int vp, int w, int h)
     {
-        if (tex == IntPtr.Zero || w != texW || h != texH)
-        {
-            if (tex != IntPtr.Zero) p_DestroyTexture(tex);
-            tex = p_CreateTexture(ren, PIXELFORMAT_IYUV, TEXTUREACCESS_STREAMING, w, h);
-            if (tex == IntPtr.Zero) throw new InvalidOperationException("SDL_CreateTexture: " + Error());
-            p_RenderSetLogicalSize(ren, w, h); // letterbox to the source aspect
-            texW = w; texH = h;
-        }
+        Texture(PIXELFORMAT_IYUV, w, h);
         p_UpdateYUVTexture(tex, null, y, yp, u, up, v, vp);
+    }
+
+    /// <summary>Copies one UYVY picture (stock OMT, decoded from VMX by libomtnet) into the texture.</summary>
+    public void UploadUyvy(IntPtr data, int stride, int w, int h)
+    {
+        Texture(PIXELFORMAT_UYVY, w, h);
+        p_UpdateTexture(tex, null, (void*)data, stride);
+    }
+
+    void Texture(uint fmt, int w, int h)
+    {
+        if (tex != IntPtr.Zero && w == texW && h == texH && fmt == texFmt) return;
+        if (tex != IntPtr.Zero) p_DestroyTexture(tex);
+        tex = p_CreateTexture(ren, fmt, TEXTUREACCESS_STREAMING, w, h);
+        if (tex == IntPtr.Zero) throw new InvalidOperationException("SDL_CreateTexture: " + Error());
+        p_RenderSetLogicalSize(ren, w, h); // letterbox to the source aspect
+        texW = w; texH = h; texFmt = fmt;
     }
 
     public void Present()

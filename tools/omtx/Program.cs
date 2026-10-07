@@ -13,7 +13,7 @@ internal static class Program
       Sources on the network, both stock OMT (_omt._tcp) and omtx (_omtx._tcp).
 
   omtx play <source> [high|medium|low] [--window WxH+X+Y] [--audio] [--ffplay PATH] [--no-vsync] [--stats]
-      Receive an omtx source and play it fullscreen (window mode with --window). Video only:
+      Receive an omtx or stock OMT source and play it fullscreen (window mode with --window). Video only:
       decoded here and drawn with SDL2 the moment each picture is ready. With --audio, --ffplay,
       or no SDL2/libavcodec, plays through ffplay instead (audio clock, more latency).
       <source> is a name ""HOST (Name)"", omtx://host:port or host:port.

@@ -102,7 +102,7 @@ internal static class PlayCmd
                 bool inter = frame.Codec == (int)OMTCodec.H264 || frame.Codec == (int)OMTCodec.HEVC;
                 if (!inter)
                 {
-                    if (!warnedStock) { Console.Error.WriteLine("omtx play: stock OMT source (not H.264/HEVC); use omt-play for it"); warnedStock = true; }
+                    if (!warnedStock) { Console.Error.WriteLine("omtx play: stock OMT (VMX) plays without --audio and --ffplay only"); warnedStock = true; }
                     continue;
                 }
                 bool key = frame.Flags.HasFlag(OMTVideoFlags.Keyframe);
@@ -196,11 +196,18 @@ internal static class PlayCmd
                     if (pending) { t.Restart(); win.Present(); showMs += t.Elapsed.TotalMilliseconds; pending = false; }
                     continue;
                 }
-                if (frame.Codec != (int)OMTCodec.H264 && frame.Codec != (int)OMTCodec.HEVC)
+                if (frame.Codec == (int)OMTCodec.UYVY || frame.Codec == (int)OMTCodec.UYVA)
                 {
-                    if (!warnedStock) { Console.Error.WriteLine("omtx play: stock OMT source (not H.264/HEVC); use omt-play for it"); warnedStock = true; }
+                    // Stock OMT: libomtnet has already decoded VMX inside Receive
+                    if (!warnedStock) { Console.Error.WriteLine($"omtx play: OMT (VMX) {frame.Width}x{frame.Height}"); warnedStock = true; }
+                    statFrames++; statBytes += frame.CompressedLength > 0 ? frame.CompressedLength : frame.DataLength;
+                    t.Restart();
+                    win.UploadUyvy(frame.Data, frame.Stride, frame.Width, frame.Height);
+                    pending = true;
+                    decMs += t.Elapsed.TotalMilliseconds;
                     continue;
                 }
+                if (frame.Codec != (int)OMTCodec.H264 && frame.Codec != (int)OMTCodec.HEVC) continue;
                 bool key = frame.Flags.HasFlag(OMTVideoFlags.Keyframe);
                 if (dec == null || decCodec != frame.Codec)
                 {
