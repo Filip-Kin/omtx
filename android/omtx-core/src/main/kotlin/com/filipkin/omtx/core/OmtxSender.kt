@@ -126,7 +126,7 @@ class OmtxSender(
         var wantKeyframe = false
         for (c in connections) {
             val inFlight = c.videoInFlight
-            val d = c.gate.offer(keyframe, inFlight, now)
+            val d = c.gate.offer(keyframe, inFlight, now, c.oldestVideoAgeMs(now))
             if (d.requestKeyframe) wantKeyframe = true
             if (c.gate.subscribed && inFlight > maxInFlight) maxInFlight = inFlight
             when (d.outcome) {
@@ -264,6 +264,7 @@ class OmtxSender(
         // Video in flight = handed to the writer and not yet through socket write(): counted
         // from enqueue until write() returns, so a frame stuck in a slow write still counts.
         private var videoCount = 0
+        private val videoTimes = ArrayDeque<Long>() // enqueue time of each video frame in flight, oldest first
         private var audioCount = 0
         private var metaCount = 0
         private val closed = AtomicBoolean(false)
@@ -272,8 +273,8 @@ class OmtxSender(
         init {
             socket.tcpNoDelay = true
             socket.keepAlive = true
-            // Small kernel buffer so a slow link backs up into our queue, where the 4-frame
-            // limit sees it, instead of hiding ~250 ms of video in the socket.
+            // Small kernel buffer so a slow link backs up into our queue, where the in-flight
+            // limits see it, instead of hiding ~250 ms of video in the socket.
             try { socket.sendBufferSize = SEND_BUFFER } catch (_: SocketException) {}
             try { configureSocket(socket) } catch (e: Exception) { log("configureSocket: ${e.message}") }
             out = socket.getOutputStream()
@@ -281,13 +282,16 @@ class OmtxSender(
 
         val videoInFlight: Int get() = synchronized(lock) { videoCount }
 
+        /** How long the oldest video frame not yet written has waited, 0 when none. */
+        fun oldestVideoAgeMs(nowMs: Long): Long = synchronized(lock) { videoTimes.firstOrNull()?.let { nowMs - it } ?: 0L }
+
         fun start() {
             Thread({ readLoop() }, "omtx-read $remote").apply { isDaemon = true; start() }
             Thread({ writeLoop() }, "omtx-write $remote").apply { isDaemon = true; start() }
         }
 
         fun enqueueVideo(frame: ByteArray) = synchronized(lock) {
-            queue.addLast(Item(frame, Wire.FRAME_VIDEO)); videoCount++; lock.notifyAll()
+            queue.addLast(Item(frame, Wire.FRAME_VIDEO)); videoCount++; videoTimes.addLast(clockMs()); lock.notifyAll()
         }
 
         /** Audio has its own bound so a backed-up link drops audio, never blocks video. */
@@ -332,7 +336,7 @@ class OmtxSender(
                     try {
                         out.write(item.bytes)
                     } finally {
-                        if (item.type == Wire.FRAME_VIDEO) synchronized(lock) { videoCount-- }
+                        if (item.type == Wire.FRAME_VIDEO) synchronized(lock) { videoCount--; videoTimes.removeFirstOrNull() }
                     }
                 }
             } catch (e: IOException) {

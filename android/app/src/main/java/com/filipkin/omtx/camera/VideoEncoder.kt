@@ -14,6 +14,7 @@ import android.os.HandlerThread
 import android.util.Log
 import android.view.Surface
 import com.filipkin.omtx.core.AnnexB
+import com.filipkin.omtx.core.BitrateController
 import com.filipkin.omtx.core.VideoCodec
 
 /**
@@ -221,5 +222,11 @@ class VideoEncoder(
         }
 
         fun hasEncoder(codec: VideoCodec, width: Int, height: Int): Boolean = pickEncoder(codec, width, height) != null
+
+        /** The most the encoder takes, so the sender's ceiling is a rate it can really make. */
+        fun maxBitrate(codec: VideoCodec, width: Int, height: Int): Int =
+            pickEncoder(codec, width, height)?.let { info ->
+                runCatching { info.getCapabilitiesForType(mimeOf(codec)).videoCapabilities.bitrateRange.upper }.getOrNull()
+            } ?: BitrateController.DEFAULT_CEILING_BPS
     }
 }

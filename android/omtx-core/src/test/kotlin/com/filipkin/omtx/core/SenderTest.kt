@@ -183,7 +183,7 @@ class SenderTest {
     @Test
     fun slowReceiverOverflowsTheInFlightLimit() {
         // Small kernel buffers both ends, receiver never reads: frames stuck in write() or the
-        // queue must count as in flight, so the 4-frame limit drops and asks for a keyframe.
+        // queue must count as in flight, so the in-flight limit drops and asks for a keyframe.
         val hooked = AtomicInteger()
         val s = OmtxSender(SenderInfo.toXml("t", "t", "t"), object : OmtxSender.Listener {
             override fun onKeyframeRequest() { keyRequests.incrementAndGet() }
@@ -199,7 +199,7 @@ class SenderTest {
             val big = hex("00 00 00 01 65") + ByteArray(256 * 1024) { 0x55 }
             val small = hex("00 00 00 01 41") + ByteArray(256 * 1024) { 0x55 }
             s.sendVideo(VideoCodec.H264, 1280, 720, 30, 1, true, 1, big)
-            for (i in 2..20) { s.sendVideo(VideoCodec.H264, 1280, 720, 30, 1, false, i.toLong(), small); Thread.sleep(20) }
+            for (i in 2..(VideoGate.MAX_IN_FLIGHT + 16)) { s.sendVideo(VideoCodec.H264, 1280, 720, 30, 1, false, i.toLong(), small); Thread.sleep(20) }
             assertTrue(s.framesDropped > 0, "no drops with a stalled receiver")
             assertTrue(keyRequests.get() >= 2, "drop did not request a keyframe")
             sock.close()

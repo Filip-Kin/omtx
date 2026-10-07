@@ -47,6 +47,10 @@ namespace libomtnet
         public static int NETWORK_RECEIVE_MAX_TRANSFER = 128 * 1024;
 
         public static int NETWORK_ASYNC_COUNT = 4;
+        //omtx: H.264/HEVC frames in flight per connection before a drop (half a second at 60 fps)
+        public static int NETWORK_ASYNC_COUNT_INTERFRAME_MAX = 30;
+        //omtx: an H.264/HEVC frame is dropped once the oldest unsent one has waited this long
+        public static int NETWORK_SEND_MAX_AGE_MS = 250;
         public static int NETWORK_ASYNC_BUFFER_AV = 1048576;
         public static int NETWORK_ASYNC_BUFFER_META = 65536;
 

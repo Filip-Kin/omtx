@@ -109,6 +109,23 @@ namespace libomtnet
 
         public int Count { get { lock (pool)  { return pool.Count; } } }
 
+        //omtx: one more send slot (inter-frame channels grow on demand, see OMTChannel.Send)
+        internal void Grow()
+        {
+            lock (lockSync)
+            {
+                if (pool == null) return;
+                SocketAsyncEventArgs e = new SocketAsyncEventArgs();
+                if (bufferSize > 0)
+                {
+                    byte[] buf = new byte[bufferSize];
+                    e.SetBuffer(buf, 0, buf.Length);
+                }
+                e.Completed += OnCompleted;
+                pool.Enqueue(e);
+            }
+        }
+
         internal void ReturnEventArgs(SocketAsyncEventArgs e)
         {
             lock (lockSync)

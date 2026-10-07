@@ -122,6 +122,7 @@ class StreamEngine(private val ctx: Context, private val ui: Ui) {
                     main.post { onReceiversChanged() }
                 }
             },
+            userCeilingBps = VideoEncoder.maxBitrate(s.codec, s.width, s.height),
             log = { Log.i(TAG, it) },
             configureSocket = ::setNotSentLowat,
         )

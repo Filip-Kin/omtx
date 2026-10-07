@@ -27,7 +27,7 @@ docker rm -f omtx-snd >/dev/null 2>&1
 docker run -d --name omtx-snd --network omtx-net --cap-add NET_ADMIN -v $L:/dist:ro -v $T:/t:ro omtx-test-env timeout 80 /t/sender.sh >/dev/null
 sleep 2; IP=$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' omtx-snd)
 docker run --rm --network omtx-net $M omtx-test-env timeout 75 /t/receiver.sh "$IP" | grep latency
-docker logs omtx-snd 2>&1 | grep -E "\[out\] [0-9]|===" | sed 's/^\[[0-9]*\] //'; docker rm -f omtx-snd >/dev/null
+docker logs omtx-snd 2>&1 | grep -E "\[out[^]]*\] [0-9]|===" | sed 's/^\[[0-9]*\] //'; docker rm -f omtx-snd >/dev/null
 echo "== mDNS discovery (two containers)"
 docker rm -f omtx-phone >/dev/null 2>&1
 docker run -d --name omtx-phone --hostname PHONE1 --network omtx-net -v $L:/dist:ro -v $T:/t:ro omtx-test-env timeout 60 /t/phone.sh >/dev/null

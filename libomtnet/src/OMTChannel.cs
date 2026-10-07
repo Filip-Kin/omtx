@@ -61,6 +61,7 @@ namespace libomtnet
         //omtx: inter-frame video state. Sending: this connection gets no video until a keyframe.
         //Receiving: frames are discarded until a keyframe after a local drop.
         private bool sendNeedsKeyframe = true;
+        private readonly System.Collections.Generic.Queue<long> sendTimes = new System.Collections.Generic.Queue<long>();
         private bool receiveNeedsKeyframe = true;
         private int sendPoolCount = 0;
         private long congestionDrops = 0;
@@ -296,6 +297,27 @@ namespace libomtnet
                         pool = metapool;
                     }
                     SocketAsyncEventArgs e = pool.GetEventArgs();
+                    bool tooOld = false;
+                    if (interFrame && pool == sendpool)
+                    {
+                        //omtx: sends complete in order on one socket, so the oldest of the last FramesInFlight
+                        //send times is the oldest frame still waiting
+                        long nowMs = Stopwatch.GetTimestamp() / (Stopwatch.Frequency / 1000);
+                        int inFlight = FramesInFlight - (e != null ? 1 : 0); // not the slot just taken for this frame
+                        while (sendTimes.Count > inFlight) sendTimes.Dequeue();
+                        tooOld = sendTimes.Count > 0 && nowMs - sendTimes.Peek() > OMTConstants.NETWORK_SEND_MAX_AGE_MS;
+                        if (tooOld && e != null) { pool.ReturnEventArgs(e); e = null; }
+                    }
+                    if (e == null && !tooOld && interFrame && pool == sendpool && sendPoolCount < OMTConstants.NETWORK_ASYNC_COUNT_INTERFRAME_MAX)
+                    {
+                        //omtx: dropping an H.264/HEVC frame freezes the receiver until the next keyframe, and that
+                        //keyframe is the biggest frame there is. A Wi-Fi hiccup is cheaper to ride out: more frames
+                        //may queue, and a drop comes only when the oldest has waited NETWORK_SEND_MAX_AGE_MS (so
+                        //latency stays bounded on a slow link) or past the count. Stock VMX keeps 4.
+                        pool.Grow();
+                        sendPoolCount += 1;
+                        e = pool.GetEventArgs();
+                    }
                     if (e == null)
                     {
                         statistics.FramesDropped += 1;
@@ -314,6 +336,7 @@ namespace libomtnet
                     int headerLength = frame.HeaderLength + frame.ExtendedHeaderLength;
                     frame.WriteDataTo(e.Buffer, 0, headerLength, length - headerLength);
                     e.SetBuffer(0, length);
+                    if (interFrame && pool == sendpool) sendTimes.Enqueue(Stopwatch.GetTimestamp() / (Stopwatch.Frequency / 1000));
                     pool.SendAsync(socket, e);
                     if (interFrame && keyframe)
                     {

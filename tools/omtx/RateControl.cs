@@ -5,7 +5,8 @@ namespace Omtx;
 /// <summary>
 /// Bitrate follows backpressure (spec section 4.3). On a congestion drop the target goes to 80% of
 /// what was actually being sent (not of the old target: an encoder below its target would never
-/// feel a cut), then holds 1 s. After 2 s clean with at most one frame in flight it rises 5%.
+/// feel a cut), then holds 1 s. After 1 s clean with at most four frames in flight it rises 25%,
+/// so one bad second costs seconds of quality, not minutes.
 /// The ceiling is the configured maximum, capped by the highest quality a receiver suggested (4.5).
 /// </summary>
 internal sealed class RateControl
@@ -51,13 +52,13 @@ internal sealed class RateControl
                 lastDown = now;
             }
         }
-        else if (inFlight > 1)
+        else if (inFlight > 4)
         {
             cleanSince = now;
         }
-        else if (now - cleanSince >= TimeSpan.FromSeconds(2))
+        else if (now - cleanSince >= TimeSpan.FromSeconds(1))
         {
-            current = Math.Min(ceiling, (long)(current * 1.05));
+            current = Math.Min(ceiling, (long)(current * 1.25));
             cleanSince = now;
         }
         if (current > ceiling) current = ceiling;

@@ -5,8 +5,9 @@ package com.filipkin.omtx.core
  *
  * - On a drop: B = max(floor, 0.8 B), then no further step down for 1 s.
  * - After 2 s with no drop and at most 1 frame in flight on any connection:
- *   B = min(ceiling, 1.05 B). The 2 s window restarts after each step up, after each drop and
- *   whenever more than one frame is in flight.
+ *   B = min(ceiling, 1.25 B). The window restarts after each step up, after each drop and
+ *   whenever more than [CALM_IN_FLIGHT] frames are in flight. (omtx 10-07: was 5% per 2 s with
+ *   at most 1 in flight, which took minutes to climb back from the floor after one bad second.)
  *
  * Ceiling = min(user ceiling, quality cap from §4.5). Time is passed in (milliseconds, any
  * monotonic base) so the logic is testable. Not thread safe; callers synchronise.
@@ -68,7 +69,7 @@ class BitrateController(
      */
     fun tick(nowMs: Long, maxInFlight: Int): Boolean {
         val since = calmSinceMs
-        if (since == null || maxInFlight > 1) {
+        if (since == null || maxInFlight > CALM_IN_FLIGHT) {
             calmSinceMs = nowMs
             return false
         }
@@ -76,7 +77,7 @@ class BitrateController(
         calmSinceMs = nowMs
         val ceiling = ceilingBps
         if (targetBps >= ceiling) return false
-        val n = minOf(ceiling, maxOf(targetBps + 1, (targetBps * 1.05).toInt()))
+        val n = minOf(ceiling, maxOf(targetBps + 1, (targetBps * 1.25).toInt()))
         targetBps = n
         return true
     }
@@ -86,7 +87,8 @@ class BitrateController(
         // No cap: the camera encoder clamps this to the most it can do. Only congestion steps it down (§4.3)
         const val DEFAULT_CEILING_BPS = 1_000_000_000
         const val STEP_DOWN_HOLD_MS = 1_000L
-        const val STEP_UP_CALM_MS = 2_000L
+        const val STEP_UP_CALM_MS = 1_000L
+        const val CALM_IN_FLIGHT = 4
     }
 }
 
@@ -95,14 +97,19 @@ class BitrateController(
  *
  * - Nothing until the connection subscribes to video.
  * - After subscribing, nothing until a keyframe.
- * - At most [maxInFlight] video frames in flight. A frame that does not fit is dropped, the
- *   connection waits for the next keyframe, and a keyframe is requested.
+ * - At most [maxInFlight] video frames in flight, the oldest waiting at most [maxAgeMs]. A frame
+ *   that does not fit is dropped, the connection waits for the next keyframe, and a keyframe is
+ *   requested.
  *
  * Keyframe requests: one at once on subscribe and on entering the wait after an overflow;
  * while still waiting, at most one more per [retryMs] so a congested link does not turn into
  * an IDR storm.
  */
-class VideoGate(val maxInFlight: Int = MAX_IN_FLIGHT, val retryMs: Long = KEYFRAME_RETRY_MS) {
+class VideoGate(
+    val maxInFlight: Int = MAX_IN_FLIGHT,
+    val retryMs: Long = KEYFRAME_RETRY_MS,
+    val maxAgeMs: Long = MAX_AGE_MS,
+) {
     enum class Outcome { SEND, NOT_SUBSCRIBED, WAITING_FOR_KEYFRAME, OVERFLOW }
 
     data class Decision(val outcome: Outcome, val requestKeyframe: Boolean) {
@@ -126,9 +133,9 @@ class VideoGate(val maxInFlight: Int = MAX_IN_FLIGHT, val retryMs: Long = KEYFRA
     }
 
     @Synchronized
-    fun offer(isKeyframe: Boolean, inFlight: Int, nowMs: Long): Decision {
+    fun offer(isKeyframe: Boolean, inFlight: Int, nowMs: Long, oldestAgeMs: Long = 0): Decision {
         if (!subscribed) return Decision(Outcome.NOT_SUBSCRIBED, false)
-        if (inFlight >= maxInFlight) {
+        if (inFlight >= maxInFlight || oldestAgeMs > maxAgeMs) {
             val entering = !waitingForKeyframe
             waitingForKeyframe = true
             return Decision(Outcome.OVERFLOW, if (entering) requestNow(nowMs) else retry(nowMs))
@@ -150,7 +157,11 @@ class VideoGate(val maxInFlight: Int = MAX_IN_FLIGHT, val retryMs: Long = KEYFRA
     }
 
     companion object {
-        const val MAX_IN_FLIGHT = 4
+        // A dropped frame freezes the receiver until the next keyframe, which is the biggest
+        // frame there is, so a Wi-Fi hiccup is ridden out: drop only when the oldest unsent frame
+        // has waited MAX_AGE_MS (latency stays bounded on a slow link), or past MAX_IN_FLIGHT.
+        const val MAX_IN_FLIGHT = 30
+        const val MAX_AGE_MS = 250L
         const val KEYFRAME_RETRY_MS = 1_000L
     }
 }

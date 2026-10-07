@@ -41,8 +41,17 @@ class VideoGateTest {
     }
 
     @Test
-    fun keyframeThatDoesNotFitIsDroppedToo() {
+    fun frameWaitingTooLongOverflows() {
         val g = VideoGate()
+        g.subscribe(0)
+        assertEquals(O.SEND, g.offer(true, 0, 0).outcome)
+        assertEquals(O.SEND, g.offer(false, 10, 10, oldestAgeMs = 200).outcome)   // a hiccup: ride it out
+        assertEquals(O.OVERFLOW, g.offer(false, 3, 20, oldestAgeMs = 300).outcome) // latency bound
+    }
+
+    @Test
+    fun keyframeThatDoesNotFitIsDroppedToo() {
+        val g = VideoGate(maxInFlight = 4)
         g.subscribe(0)
         g.offer(true, 0, 0)
         assertEquals(O.OVERFLOW, g.offer(true, 4, 10).outcome)
@@ -52,7 +61,7 @@ class VideoGateTest {
 
     @Test
     fun keyframeRequestsAreRateLimitedWhileWaiting() {
-        val g = VideoGate(retryMs = 1000)
+        val g = VideoGate(maxInFlight = 4, retryMs = 1000)
         assertTrue(g.subscribe(0))
         assertFalse(g.offer(false, 0, 500).requestKeyframe)
         assertTrue(g.offer(false, 0, 1000).requestKeyframe)
@@ -88,39 +97,39 @@ class BitrateControllerTest {
     }
 
     @Test
-    fun stepsUpAfterTwoCalmSeconds() {
+    fun stepsUpAfterOneCalmSecond() {
         val c = BitrateController(10_000_000, initialBps = 5_000_000)
         assertFalse(c.tick(0, 0))
-        assertFalse(c.tick(1999, 1))
-        assertTrue(c.tick(2000, 1))
-        assertEquals(5_250_000, c.targetBps)
-        assertFalse(c.tick(3000, 0))         // window restarted at the step
-        assertTrue(c.tick(4000, 0))
-        assertEquals(5_512_500, c.targetBps)
+        assertFalse(c.tick(999, 4))
+        assertTrue(c.tick(1000, 4))
+        assertEquals(6_250_000, c.targetBps)
+        assertFalse(c.tick(1500, 0))         // window restarted at the step
+        assertTrue(c.tick(2000, 0))
+        assertEquals(7_812_500, c.targetBps)
     }
 
     @Test
     fun moreThanOneInFlightOrADropRestartsTheWindow() {
         val c = BitrateController(10_000_000, initialBps = 5_000_000)
         c.tick(0, 0)
-        c.tick(1500, 2)                      // backlog
-        assertFalse(c.tick(3000, 0))
-        assertTrue(c.tick(3500, 0))
+        c.tick(700, 5)                       // backlog
+        assertFalse(c.tick(1500, 0))
+        assertTrue(c.tick(1700, 0))
         val after = c.targetBps
-        c.onDrop(4000)
-        assertFalse(c.tick(5900, 0))
-        assertTrue(c.tick(6000, 0))
-        assertEquals(5_250_000, after)
-        assertEquals(4_410_000, c.targetBps)
+        c.onDrop(2000)
+        assertFalse(c.tick(2999, 0))
+        assertTrue(c.tick(3000, 0))
+        assertEquals(6_250_000, after)
+        assertEquals(6_250_000, c.targetBps)
     }
 
     @Test
     fun neverAboveCeilingAndQualityCapClamps() {
         val c = BitrateController(10_000_000, initialBps = 9_800_000)
         c.tick(0, 0)
-        assertTrue(c.tick(2000, 0))
+        assertTrue(c.tick(1000, 0))
         assertEquals(10_000_000, c.targetBps)
-        assertFalse(c.tick(4000, 0))
+        assertFalse(c.tick(2000, 0))
         assertTrue(c.setQualityCap(Quality.Low.capBps))
         assertEquals(8_000_000, c.targetBps)
         assertEquals(8_000_000, c.ceilingBps)
