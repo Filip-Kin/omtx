@@ -87,10 +87,14 @@ internal sealed unsafe class SdlWindow : IDisposable
         }
         else
         {
-            // Desktop size up front too: with no window manager (bare X on a projector) the
-            // fullscreen flag alone leaves the window at its requested size
+            // Which monitor: SDL_VIDEO_FULLSCREEN_DISPLAY, as ndi-play gets it from the projector
+            // daemon. Desktop size up front too: with no window manager (bare X on a projector)
+            // the fullscreen flag alone leaves the window at its requested size.
+            int display = int.TryParse(Environment.GetEnvironmentVariable("SDL_VIDEO_FULLSCREEN_DISPLAY"), out int d) && d >= 0 ? d : 0;
             int* mode = stackalloc int[6]; // SDL_DisplayMode: format, w, h, refresh_rate, driverdata
-            if (p_GetDesktopDisplayMode(0, mode) == 0 && mode[1] > 0) { w = mode[1]; h = mode[2]; x = y = 0; }
+            if (p_GetDesktopDisplayMode(display, mode) != 0 && display != 0) { display = 0; p_GetDesktopDisplayMode(0, mode); }
+            if (mode[1] > 0) { w = mode[1]; h = mode[2]; }
+            x = y = WINDOWPOS_UNDEFINED | display;
             flags |= WINDOW_FULLSCREEN_DESKTOP;
         }
         fixed (byte* t = Z(title)) win = p_CreateWindow(t, x, y, w, h, flags);
