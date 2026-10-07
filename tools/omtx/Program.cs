@@ -4,10 +4,10 @@ namespace Omtx;
 
 internal static class Program
 {
-    public const string Version = "0.2.2";
+    public const string Version = "0.2.3";
     public static volatile bool Running = true;
 
-    const string Usage = @"omtx 0.2.2: OMT with H.264/HEVC for Wi-Fi
+    const string Usage = @"omtx 0.2.3: OMT with H.264/HEVC for Wi-Fi
 
   omtx list [--seconds N]
       Sources on the network, both stock OMT (_omt._tcp) and omtx (_omtx._tcp).

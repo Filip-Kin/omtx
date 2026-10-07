@@ -26,13 +26,16 @@ RUN curl -fsSL https://dot.net/v1/dotnet-install.sh -o /tmp/di.sh \
  && bash /tmp/di.sh --channel 8.0 --install-dir /opt/dotnet
 ENV PATH=/opt/dotnet:$PATH DOTNET_CLI_TELEMETRY_OPTOUT=1 DOTNET_NOLOGO=1
 
-# libvmx (stock OMT codec), pinned like ndi-build. Only the AVX2 file gets AVX2, so CPUs
-# without it fall back to SSE at runtime instead of crashing.
+# libvmx (stock OMT codec), pinned like ndi-build. Only the AVX2 file gets AVX2/BMI/LZCNT, so
+# CPUs without them fall back to SSE at runtime. Never -mlzcnt on the other files: on a CPU
+# without LZCNT (the projector PCs' Celeron J1800, Silvermont) the instruction runs as BSR,
+# returns a different value, and VMX decodes to green garbage instead of failing.
 ARG LIBVMX_REV=a1828cb
 RUN git clone https://github.com/openmediatransport/libvmx.git /vmx && git -C /vmx checkout $LIBVMX_REV \
  && mkdir -p /out/linux-x64 && cd /vmx/src \
- && clang++ -O3 -std=c++17 -fdeclspec -fPIC -msse4.2 -mssse3 -mlzcnt -c vmxcodec.cpp      -o /tmp/vmx.o \
- && clang++ -O3 -std=c++17 -fdeclspec -fPIC -msse4.2 -mssse3 -mlzcnt -c vmxcodec_x86.cpp  -o /tmp/vmx_x86.o \
+ && sed -i 's|^#include <x86intrin.h>$|#include <x86intrin.h>\n#ifndef __LZCNT__\n#define __lzcnt64(t) ((t) ? (unsigned long long)__builtin_clzll(t) : 64ULL)\n#endif|' vmxcodec_x86.h \
+ && clang++ -O3 -std=c++17 -fdeclspec -fPIC -msse4.2 -mssse3 -c vmxcodec.cpp      -o /tmp/vmx.o \
+ && clang++ -O3 -std=c++17 -fdeclspec -fPIC -msse4.2 -mssse3 -c vmxcodec_x86.cpp  -o /tmp/vmx_x86.o \
  && clang++ -O3 -std=c++17 -fdeclspec -fPIC -mavx2 -mbmi -mbmi2 -mlzcnt -c vmxcodec_avx2.cpp -o /tmp/vmx_avx2.o \
  && clang++ -shared -fPIC /tmp/vmx.o /tmp/vmx_x86.o /tmp/vmx_avx2.o -o /out/linux-x64/libvmx.so
 
