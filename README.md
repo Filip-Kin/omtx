@@ -15,7 +15,7 @@ source they cannot decode.
 |---|---|
 | `libomtnet/` | Fork of upstream libomtnet (subtree at `029ef4e`). H.264/HEVC passthrough, drop-to-keyframe, keyframe requests, small send buffers on inter-frame connections, `_omtx._tcp`, discovery that never takes the process down. |
 | `tools/omtx/` | One C# binary: `list`, `play`, `out`, `in`, `bars`. FFmpeg 4 to 8 bound at runtime. |
-| `android/` | Phone camera sender: Camera2 + MediaCodec + AudioRecord, NsdManager `_omtx._tcp`, tally border. |
+| `android/` | Phone camera sender: Camera2 + MediaCodec + AudioRecord, NsdManager `_omtx._tcp`, tally on screen. |
 | `build/Dockerfile` | Linux (NativeAOT, Debian 11 base) and Windows builds. |
 | `dist/` | Built files (not in git). |
 
@@ -33,6 +33,25 @@ source they cannot decode.
   private networks.
 
 **Phone**: install `dist/omtx-camera.apk` (sideload), set a source name, Start.
+
+### Camera app
+
+Feature set follows the NDI HX Camera app:
+
+- Rear and front camera. Switching while streaming keeps the stream running when the other
+  camera offers the same size and frame rate.
+- Pinch zoom on the logical camera through `CONTROL_ZOOM_RATIO` (API 30+), so on a Pixel 9 Pro
+  the range runs into the ultrawide (below 1x) and the telephoto lens. The zoom chip shows the
+  ratio; tap it for 1x. API 29 falls back to a digital crop.
+- Tap to focus and meter at a point (continuous video AF on that region). Focus lock freezes
+  focus where it is; a tap while locked focuses once at the new point and holds it.
+- Auto exposure, exposure lock, and exposure compensation on a slider (tap the EV value for 0).
+- Rule-of-thirds grid, tally as a border, a full-screen tint, or off. Grid, tally mode and
+  camera are remembered.
+- Receiver count and a dot in the status bar: grey with no receiver, green with one or more.
+- With no receiver connected the camera feeds only the preview: the encoder gets no frames and
+  does no work. The first connection turns the encoder input on and asks for a keyframe at once,
+  so the receiver starts on the next frame.
 
 **Any Linux box** (Debian 11/12/13): unpack `dist/omtx-linux-x64.tar.gz`, then
 

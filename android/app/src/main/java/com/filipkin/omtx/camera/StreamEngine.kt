@@ -18,21 +18,26 @@ import java.util.concurrent.atomic.AtomicInteger
 /**
  * Owns the camera, encoder, audio, sender, discovery and Wi-Fi lock. All public methods are
  * called on the main thread; callbacks to the UI are posted to the main thread.
+ *
+ * While streaming with no receiver connected the camera does not feed the encoder, so nothing
+ * is encoded. The first connection turns the encoder input on and asks for a keyframe at once.
  */
 class StreamEngine(private val ctx: Context, private val ui: Ui) {
     interface Ui {
         fun onTally(tally: Tally)
         fun onFailure(what: String)
+        fun onReceiversChanged(count: Int) {}
     }
 
     private val main = Handler(Looper.getMainLooper())
-    val caps = CameraCaps(ctx)
+    var settings: StreamSettings = StreamSettings.load(ctx)
+    var caps = CameraCaps(ctx, settings.facing)
+        private set
     private val camera = CameraSource(ctx, caps) { what -> main.post { fail(what) } }
     private val discovery = Discovery(ctx)
     private val wifiLock = ctx.applicationContext.getSystemService(WifiManager::class.java)
         .createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "omtx").apply { setReferenceCounted(false) }
 
-    var settings: StreamSettings = StreamSettings.load(ctx)
     private var preview: Surface? = null
 
     @Volatile private var sender: OmtxSender? = null
@@ -73,7 +78,28 @@ class StreamEngine(private val ctx: Context, private val ui: Ui) {
             camera.close()
             return
         }
-        camera.configure(p, encoderSurface, settings.fps)
+        camera.configure(p, encoderSurface, settings.fps, settings.width.toDouble() / settings.height)
+    }
+
+    /** Zoom, focus and exposure. `displayRotationDeg` maps preview taps onto the sensor. */
+    fun setControls(c: CameraControls, displayRotationDeg: Int) {
+        camera.setControls(c, displayRotationDeg)
+    }
+
+    /** Open the other camera. The encoder keeps running; the next frame is a keyframe. */
+    fun setFacing(f: Facing, c: CameraControls) {
+        settings = settings.copy(facing = f)
+        if (caps.facing == f) return
+        caps = CameraCaps(ctx, f)
+        camera.switchCamera(caps, c)
+        encoder?.requestKeyframe()
+    }
+
+    private fun onReceiversChanged() {
+        val n = receivers
+        camera.setEncoderActive(n > 0)
+        if (n > 0) encoder?.requestKeyframe()
+        ui.onReceiversChanged(n)
     }
 
     fun start() {
@@ -91,6 +117,9 @@ class StreamEngine(private val ctx: Context, private val ui: Ui) {
                 override fun onBitrateChanged(bps: Int) { encoder?.setBitrate(bps) }
                 override fun onTallyChanged(tally: Tally) {
                     main.post { this@StreamEngine.tally = tally; ui.onTally(tally) }
+                }
+                override fun onConnectionsChanged(count: Int) {
+                    main.post { onReceiversChanged() }
                 }
             },
             userCeilingBps = s.maxBitrateBps,
@@ -124,6 +153,7 @@ class StreamEngine(private val ctx: Context, private val ui: Ui) {
         encoder = enc
         encoderSurface = surface
         enc.start()
+        camera.setEncoderActive(snd.connectionCount > 0)
         reconfigureCamera()
 
         if (audioEnabled) {
@@ -155,8 +185,10 @@ class StreamEngine(private val ctx: Context, private val ui: Ui) {
         sender?.stop()
         sender = null
         if (wifiLock.isHeld) wifiLock.release()
+        camera.setEncoderActive(false)
         tally = Tally.NONE
         ui.onTally(Tally.NONE)
+        ui.onReceiversChanged(0)
         reconfigureCamera()
     }
 

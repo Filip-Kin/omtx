@@ -159,6 +159,28 @@ class SenderTest {
     }
 
     @Test
+    fun connectionCountIsReportedOnConnectAndDisconnect() {
+        // The camera app encodes only while this count is above zero.
+        val counts = LinkedBlockingQueue<Int>()
+        val s = OmtxSender(SenderInfo.toXml("t", "t", "t"), object : OmtxSender.Listener {
+            override fun onConnectionsChanged(count: Int) { counts.add(count) }
+        }, portStart = freePort())
+        try {
+            val port = s.start()
+            val a = Client(port)
+            assertEquals(1, counts.poll(2, TimeUnit.SECONDS))
+            val b = Client(port)
+            assertEquals(2, counts.poll(2, TimeUnit.SECONDS))
+            a.socket.close()
+            assertEquals(1, counts.poll(2, TimeUnit.SECONDS))
+            b.socket.close()
+            assertEquals(0, counts.poll(2, TimeUnit.SECONDS))
+        } finally {
+            s.stop()
+        }
+    }
+
+    @Test
     fun slowReceiverOverflowsTheInFlightLimit() {
         // Small kernel buffers both ends, receiver never reads: frames stuck in write() or the
         // queue must count as in flight, so the 4-frame limit drops and asks for a keyframe.
