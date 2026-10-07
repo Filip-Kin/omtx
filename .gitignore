@@ -8,3 +8,4 @@ local.properties
 !dist/.keep
 tests/shots/
 tests/clips/
+tools/ui-web/screenshots/

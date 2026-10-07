@@ -52,12 +52,13 @@ These are what make a long-GOP stream survive Wi-Fi.
 1. **A new subscriber starts on a keyframe.** When a connection subscribes to video, the sender
    sends that connection no video until a keyframe, and requests a keyframe from its encoder
    at once.
-2. **A dropped frame drops to the next keyframe.** A sender keeps at most 4 video frames in
-   flight per connection. If a frame does not fit, the sender drops it and every following
-   non-keyframe on that connection, and requests a keyframe. Other connections are not affected.
+2. **A dropped frame drops to the next keyframe.** A sender queues video per connection and
+   drops a frame once the oldest unsent frame has waited 250 ms (or 30 frames are queued).
+   It then drops every following non-keyframe on that connection and requests a keyframe.
+   Other connections are not affected.
 3. **Bitrate follows backpressure.** Recommended: target bitrate `B` between a floor and a
    ceiling. On a drop, `B = max(floor, 0.8 * B)`, then wait 1 s before any further step down.
-   After 2 s with no drop and at most 1 frame in flight, `B = min(ceiling, 1.05 * B)`.
+   After 1 s with no drop and at most 4 frames queued, `B = min(ceiling, 1.25 * B)`.
 4. **Preview requests are ignored.** `<OMTSettings Preview="true" />` has no meaning for
    H.264/HEVC. The sender keeps sending full frames.
 5. **Suggested quality.** `<OMTSettings Quality="..."/>` may cap the ceiling: Low 8 Mbps,

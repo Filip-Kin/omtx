@@ -8,7 +8,7 @@ import { fileURLToPath } from "url";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
-const { chromium } = require(process.env.PLAYWRIGHT_CORE ?? "/home/filip/work/lrb-vision/node_modules/playwright-core");
+const { chromium } = require(process.env.PLAYWRIGHT_CORE ?? "playwright-core");
 const BASE = process.env.BASE ?? "http://localhost:5181/";
 const OUT = join(here, "screenshots");
 mkdirSync(OUT, { recursive: true });
@@ -55,10 +55,10 @@ await shot("watch-one", "#/watch/s1", { wait: 2500 });
 await scenario({ sources: 12, bridges: "none" });
 await shot("sources-many", "#/sources", { wait: 2500 });
 await shot("sources-many-hover", "#/sources", {
-  width: 1280, wait: 2500, fullPage: false, before: async (p) => { await p.hover(".tile:nth-child(2)"); await p.waitForTimeout(400); },
+  width: 1280, wait: 2500, fullPage: false, before: async (p) => { await p.hover(".grid li:nth-child(2) .tile"); await p.waitForTimeout(400); },
 });
 await shot("sources-filter-omtx", "#/sources", {
-  wait: 2500, before: async (p) => { await p.click(".chip:nth-child(3)"); await p.waitForTimeout(1500); },
+  wait: 2500, before: async (p) => { await p.click(".tabs button:nth-child(3)"); await p.waitForTimeout(1500); },
 });
 await shot("watch-many", "#/watch/s11", { wait: 2500 });
 await shot("watch-gone", "#/watch/s99", { wait: 2000 });

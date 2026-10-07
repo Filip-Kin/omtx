@@ -20,7 +20,7 @@ internal sealed class StreamStats
     public long? TargetKbps;
     public double? MsReceive, MsConvert, MsEncode;
     public int AudioRate, AudioChannels;
-    public volatile string State;        // per stream inside an "every source" bridge
+    public volatile string State, Error; // per stream inside an "every source" bridge
 
     static long Now => Stopwatch.GetTimestamp() * 1000 / Stopwatch.Frequency;
 
@@ -83,6 +83,7 @@ internal sealed class StreamStats
         {
             w.WriteStartObject();
             if (State != null) w.WriteString("state", State);
+            if (Error != null) w.WriteString("error", Error);
             w.WriteNumber("fps", Math.Round(fps, 1));
             w.WriteNumber("mbps", Math.Round(mbps, 2));
             if (Width > 0) { w.WriteNumber("width", Width); w.WriteNumber("height", Height); }

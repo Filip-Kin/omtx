@@ -85,7 +85,7 @@ internal sealed class OutBridge : Bridge
         Stats.TargetKbps = o.CeilingBps / 1000;
     }
 
-    public override IEnumerable<(string, string, StreamStats)> Streams() { Stats.State = State; yield return (Source, PublishedAs, Stats); }
+    public override IEnumerable<(string, string, StreamStats)> Streams() { Stats.State = State; Stats.Error = Error; yield return (Source, PublishedAs, Stats); }
 
     // A frame waiting for the encoder: a private copy of the picture plus what the encoder needs.
     private sealed class Job
@@ -298,7 +298,7 @@ internal sealed class InBridge : Bridge
             PublishedAs = source.Substring(0, open).Trim() + " " + source.Substring(open + 1, source.Length - open - 2);
     }
 
-    public override IEnumerable<(string, string, StreamStats)> Streams() { Stats.State = State; yield return (Source, PublishedAs, Stats); }
+    public override IEnumerable<(string, string, StreamStats)> Streams() { Stats.State = State; Stats.Error = Error; yield return (Source, PublishedAs, Stats); }
 
     protected override void Run()
     {

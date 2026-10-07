@@ -10,6 +10,7 @@ export interface Audio {
 export interface Stats {
   /** per stream: "idle" while nothing watches it */
   state?: BridgeState | null;
+  error?: string | null;
   fps?: number | null;
   mbps?: number | null;
   width?: number | null;

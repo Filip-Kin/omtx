@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type ServerState } from "../api";
 import * as f from "../format";
-import { TypeBadge } from "./Sources";
+import { typeName } from "./Sources";
 
 /** Preview width requested from the backend, picked once per mount from the screen size. */
 function previewWidth(): number {
@@ -279,15 +279,10 @@ export function Watch({ state, id }: { state: ServerState | null; id: string | n
         </div>
         {src ? (
           <aside className="panel stats" aria-label="Stats">
-            <div className="stats-head">
-              <h1 className="stats-title">{src.label || src.name}</h1>
-              <div className="stats-sub">
-                <TypeBadge type={src.type} />
-                {src.local ? <span className="badge">Local</span> : null}
-                <span>{src.machine}</span>
-              </div>
-            </div>
+            <h1 className="sr-only">{src.name}</h1>
             <dl>
+              <Row k="Machine" v={src.machine} />
+              <Row k="Type" v={typeName(src.type)} />
               <Row k="Resolution" v={f.resolution(stats)} />
               <Row k="Frame rate" v={f.fps(stats)} />
               <Row k="Bitrate" v={f.mbps(stats)} />

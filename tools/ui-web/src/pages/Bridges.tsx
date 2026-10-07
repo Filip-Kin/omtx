@@ -1,8 +1,8 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { startBridge, stopBridge, type Bridge, type ServerState, type Stats } from "../api";
 import * as f from "../format";
 
-const STATE_LABEL: Record<Bridge["state"], string> = {
+const STATE: Record<string, string> = {
   starting: "Starting",
   idle: "Idle",
   waiting: "Waiting",
@@ -11,248 +11,136 @@ const STATE_LABEL: Record<Bridge["state"], string> = {
   stopped: "Stopped",
 };
 
-const EVERY: Record<Bridge["kind"], string> = { out: "Every OMT source on this PC", in: "Every omtx source" };
+type Row = { key: string; source: string; publishedAs: string; state: string; error: string | null; stats: Stats | null };
 
-/** Per-frame time as a bar against the frame interval: a full bar means no headroom left. */
-function Timing({ label, value, budget }: { label: string; value?: number | null; budget: number | null }) {
-  if (!f.has(value)) return null;
-  const pct = budget ? Math.min(100, (value / budget) * 100) : 0;
-  const level = pct >= 90 ? "hot" : pct >= 60 ? "warm" : "";
-  return (
-    <div className="timing">
-      <span className="timing-k">{label}</span>
-      <span className="timing-bar" aria-hidden="true">
-        <span className={`timing-fill ${level}`} style={{ width: `${budget ? pct : 0}%` }} />
-      </span>
-      <span className="timing-v">{f.ms(value)}</span>
-    </div>
-  );
+/** One row per published stream: a "*" bridge has one per source, a single bridge has one. */
+function rowsOf(list: Bridge[]): Row[] {
+  const rows: Row[] = [];
+  for (const b of list) {
+    const streams = b.streams ?? [];
+    if (b.source === "*" || streams.length > 1) {
+      for (const s of streams) {
+        rows.push({
+          key: `${b.id}/${s.publishedAs || s.source}`,
+          source: s.source,
+          publishedAs: s.publishedAs,
+          state: s.stats?.state ?? b.state,
+          error: s.stats?.error ?? null,
+          stats: s.stats ?? null,
+        });
+      }
+      if (b.state === "error" && b.error) rows.push({ key: b.id, source: "", publishedAs: "", state: "error", error: b.error, stats: null });
+    } else {
+      rows.push({
+        key: b.id,
+        source: b.source,
+        publishedAs: b.publishedAs?.[0] ?? streams[0]?.publishedAs ?? "",
+        state: b.state,
+        error: b.error ?? null,
+        stats: b.stats ?? streams[0]?.stats ?? null,
+      });
+    }
+  }
+  return rows.sort((a, b) => a.source.localeCompare(b.source));
 }
 
-function StatLine({ stats }: { stats?: Stats | null }) {
-  if (!stats) return null;
-  const budget = (() => {
-    const n = f.nominalFps(stats.frameRate) ?? (f.has(stats.fps) && stats.fps > 0 ? stats.fps : null);
-    return n ? 1000 / n : null;
-  })();
-  const bitrate = f.mbps(stats);
-  const tgt = f.target(stats);
-  const cells: [string, string | null][] = [
-    ["Frame rate", f.fps(stats)],
-    ["Bitrate", bitrate && tgt ? `${bitrate.replace(" Mbps", "")} / ${tgt}` : bitrate ?? (tgt ? `${tgt} target` : null)],
-    ["Resolution", f.resolution(stats)],
-    ["Codec", f.codecName(stats.codec)],
-    ["Encoder", stats.encoder ?? null],
-    ["Decoder", stats.decoder ?? null],
-    ["Receivers", f.count(stats.receivers)],
-    ["Keyframes", f.count(stats.keyframes)],
-    ["Drops", f.count(stats.drops)],
-    ["Audio", f.audio(stats.audio)],
-  ];
-  const shown = cells.filter(([, v]) => v);
-  const timings = [stats.msReceive, stats.msConvert, stats.msEncode].some(f.has);
-  return (
-    <div className="statline">
-      {shown.length ? (
-        <dl className="cells">
-          {shown.map(([k, v]) => (
-            <div key={k} className={`cell${k === "Drops" && Number(v) > 0 ? " warn" : ""}`}>
-              <dt>{k}</dt>
-              <dd>{v}</dd>
-            </div>
-          ))}
-        </dl>
-      ) : null}
-      {timings ? (
-        <div className="timings">
-          <Timing label="Receive" value={stats.msReceive} budget={budget} />
-          <Timing label="Convert" value={stats.msConvert} budget={budget} />
-          <Timing label="Encode" value={stats.msEncode} budget={budget} />
-        </div>
-      ) : null}
-    </div>
-  );
+/** Work per frame, without the time spent waiting for the next frame to arrive. */
+function frameTime(s: Stats | null): string | null {
+  if (!s) return null;
+  const parts = [s.msConvert, s.msEncode].filter(f.has);
+  return parts.length ? f.ms(parts.reduce((a, b) => a + b, 0)) : null;
 }
 
-function BridgeCard({ b }: { b: Bridge }) {
+function Section({ kind, state }: { kind: "out" | "in"; state: ServerState }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const stop = async () => {
+  const list = state.bridges.filter((b) => b.kind === kind);
+  const auto = list.find((b) => b.source === "*" && b.state !== "stopped");
+  const rows = rowsOf(list);
+
+  const toggle = async () => {
     setBusy(true);
     setError(null);
     try {
-      await stopBridge(b.id);
+      if (auto) await stopBridge(auto.id);
+      else await startBridge(kind === "out" ? { kind, source: "*", codec: "h264" } : { kind, source: "*" });
     } catch (e) {
       setError((e as Error).message);
-      setBusy(false);
-    }
-  };
-  const from = b.source === "*" ? EVERY[b.kind] : b.source;
-  const streams = b.streams ?? [];
-  const to =
-    b.source === "*"
-      ? streams.length || b.publishedAs?.length
-        ? `${streams.length || b.publishedAs!.length} ${(streams.length || b.publishedAs!.length) === 1 ? "source" : "sources"}`
-        : b.state === "error" ? null : "No sources"
-      : b.publishedAs?.length ? b.publishedAs.join(", ") : null;
-  // A "*" bridge reports per-camera streams; a single-source bridge reports `stats` directly.
-  const showStreams = streams.length > 0 && (b.source === "*" || !b.stats);
-
-  return (
-    <li className={`panel bridge state-${b.state}`}>
-      <div className="bridge-head">
-        <span className="badge">{b.kind === "out" ? "Out" : "In"}</span>
-        <span className={`pill ${b.state}`}>{STATE_LABEL[b.state] ?? b.state}</span>
-        <span className="spacer" />
-        <button className="btn danger" onClick={stop} disabled={busy}>
-          {busy ? "Stopping…" : "Stop"}
-        </button>
-      </div>
-      <div className="route">
-        <span className="route-from">{from}</span>
-        <span className="route-arrow" aria-hidden="true">
-          →
-        </span>
-        <span className="route-to">{to}</span>
-      </div>
-      {b.state === "error" && b.error ? (
-        <div className="bridge-error" role="alert">
-          {b.error}
-        </div>
-      ) : null}
-      {error ? (
-        <div className="bridge-error" role="alert">
-          {error}
-        </div>
-      ) : null}
-      {!showStreams ? <StatLine stats={b.stats} /> : null}
-      {showStreams ? (
-        <ul className="streams">
-          {streams.map((s) => (
-            <li key={s.publishedAs || s.source} className="stream">
-              <div className="route small">
-                {s.stats?.state ? <span className={`pill ${s.stats.state}`}>{STATE_LABEL[s.stats.state] ?? s.stats.state}</span> : null}
-                <span className="route-from">{s.source}</span>
-                <span className="route-arrow" aria-hidden="true">
-                  →
-                </span>
-                <span className="route-to">{s.publishedAs}</span>
-              </div>
-              <StatLine stats={s.stats} />
-            </li>
-          ))}
-        </ul>
-      ) : null}
-    </li>
-  );
-}
-
-function NewBridge({ state }: { state: ServerState }) {
-  const [kind, setKind] = useState<"out" | "in">("out");
-  const [source, setSource] = useState("");
-  const [codec, setCodec] = useState<"h264" | "hevc">("h264");
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-
-  const options = state.sources
-    .filter((s) => s.type === (kind === "out" ? "omt" : "omtx"))
-    .sort((a, b) => a.name.localeCompare(b.name));
-  const values = ["*", ...options.map((s) => s.name)];
-
-  // Keep the selection valid as sources come and go or the kind changes.
-  useEffect(() => {
-    if (!values.includes(source)) setSource(values[0] ?? "");
-  }, [values.join("\n"), source]);
-
-  const ready = !!source && !busy;
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!ready) return;
-    setBusy(true);
-    setError(null);
-    try {
-      await startBridge(
-        kind === "out"
-          ? { kind, source, codec }
-          : { kind, source },
-      );
-    } catch (err) {
-      setError((err as Error).message);
     } finally {
       setBusy(false);
     }
   };
 
+  const title = kind === "out" ? "OMT → omtx" : "omtx → OMT";
+  const empty = !auto ? "Off" : kind === "out" ? "No OMT sources on this PC" : "No omtx sources";
+
   return (
-    <form className="panel form" onSubmit={submit} aria-labelledby="new-bridge">
-      <h2 id="new-bridge">New bridge</h2>
-      <fieldset className="seg">
-        <legend className="sr-only">Direction</legend>
-        <label className={kind === "out" ? "on" : ""}>
-          <input type="radio" name="kind" value="out" checked={kind === "out"} onChange={() => setKind("out")} />
-          Out: OMT → omtx
-        </label>
-        <label className={kind === "in" ? "on" : ""}>
-          <input type="radio" name="kind" value="in" checked={kind === "in"} onChange={() => setKind("in")} />
-          In: omtx → OMT
-        </label>
-      </fieldset>
-      <label className="field">
-        <span>Source</span>
-        <select value={source} onChange={(e) => setSource(e.target.value)} disabled={!values.length}>
-          <option value="*">{EVERY[kind]}</option>
-          {options.map((s) => (
-            <option key={s.id} value={s.name}>
-              {s.name}
-            </option>
-          ))}
-        </select>
-      </label>
-      {kind === "out" ? (
-        <div className="field-row">
-          <label className="field">
-            <span>Codec</span>
-            <select value={codec} onChange={(e) => setCodec(e.target.value as "h264" | "hevc")}>
-              <option value="h264">H.264</option>
-              <option value="hevc">HEVC</option>
-            </select>
-          </label>
-        </div>
-      ) : null}
+    <section className="section" aria-labelledby={`h-${kind}`}>
+      <div className="section-head">
+        <h2 id={`h-${kind}`}>{title}</h2>
+        <button className="switch" role="switch" aria-checked={!!auto} onClick={toggle} disabled={busy}>
+          Automatic
+        </button>
+      </div>
       {error ? (
-        <div className="form-error" role="alert">
+        <div className="error" role="alert">
           {error}
         </div>
       ) : null}
-      <button className="btn primary" type="submit" disabled={!ready}>
-        {busy ? "Starting…" : "Start"}
-      </button>
-    </form>
+      {rows.length === 0 ? (
+        <div className="empty">{empty}</div>
+      ) : (
+        <table className="table">
+          <thead>
+            <tr>
+              <th>Source</th>
+              <th>Published as</th>
+              <th>State</th>
+              <th className="n">Frame rate</th>
+              <th className="n">Bitrate</th>
+              <th>Resolution</th>
+              <th>Codec</th>
+              <th>{kind === "out" ? "Encoder" : "Decoder"}</th>
+              <th className="n">Drops</th>
+              <th className="n">Frame time</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => {
+              const s = r.stats;
+              const live = r.state === "running";
+              return (
+                <tr key={r.key} className={r.state === "error" ? "row-error" : live ? "" : "row-idle"}>
+                  <td data-k="Source" className="name">{r.source}</td>
+                  <td data-k="Published as" className="name">{r.publishedAs}</td>
+                  <td data-k="State" className={`state ${r.state}`}>
+                    {STATE[r.state] ?? r.state}
+                    {r.error ? <div className="state-error">{r.error}</div> : null}
+                  </td>
+                  <td data-k="Frame rate" className="n">{live ? f.fps(s) : null}</td>
+                  <td data-k="Bitrate" className="n">{live ? f.mbps(s) : null}</td>
+                  <td data-k="Resolution">{f.resolution(s)}</td>
+                  <td data-k="Codec">{f.codecName(s?.codec)}</td>
+                  <td data-k={kind === "out" ? "Encoder" : "Decoder"}>{kind === "out" ? s?.encoder : s?.decoder}</td>
+                  <td data-k="Drops" className={`n${(s?.drops ?? 0) > 0 ? " warn" : ""}`}>{f.count(s?.drops)}</td>
+                  <td data-k="Frame time" className="n">{live ? frameTime(s) : null}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      )}
+    </section>
   );
 }
 
 export function Bridges({ state }: { state: ServerState | null }) {
   if (!state) return <div className="empty">Connecting…</div>;
   return (
-    <section className="page">
-      <div className="page-head">
-        <h1>Bridges</h1>
-      </div>
-      <div className="bridges-layout">
-        <div className="bridges-list">
-          {state.bridges.length === 0 ? (
-            <div className="empty panel">No bridges</div>
-          ) : (
-            <ul className="bridge-list">
-              {state.bridges.map((b) => (
-                <BridgeCard key={b.id} b={b} />
-              ))}
-            </ul>
-          )}
-        </div>
-        <NewBridge state={state} />
-      </div>
-    </section>
+    <div className="page">
+      <h1 className="sr-only">Bridges</h1>
+      <Section kind="out" state={state} />
+      <Section kind="in" state={state} />
+    </div>
   );
 }

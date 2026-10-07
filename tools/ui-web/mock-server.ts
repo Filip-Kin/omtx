@@ -104,7 +104,7 @@ const jitter = (v: number, p = 0.03) => +(v * (1 + (Math.random() * 2 - 1) * p))
 
 function statsFor(kind: "monitor" | "out" | "in", opts: { kbps?: number; codec?: string } = {}) {
   const base = {
-    fps: jitter(29.97, 0.01), width: 1920, height: 1080, frameRate: "30000/1001",
+    fps: jitter(59.94, 0.01), width: 1920, height: 1080, frameRate: "60000/1001",
     keyframes: 1 + Math.floor(Math.random() * 2), drops: Math.random() < 0.15 ? 1 : 0,
     audio: { rate: 48000, channels: 2 },
   };
@@ -112,14 +112,13 @@ function statsFor(kind: "monitor" | "out" | "in", opts: { kbps?: number; codec?:
     return { ...base, mbps: jitter(9.95), codec: "H264", receivers: 2, decoder: "h264", msReceive: jitter(3.1, 0.2), msConvert: jitter(5, 0.2) };
   }
   if (kind === "out") {
-    const t = opts.kbps ?? 10000;
     return {
-      ...base, mbps: jitter(t / 1000 * 0.98), codec: opts.codec === "hevc" ? "HEVC" : "H264", targetKbps: t,
-      receivers: 1, encoder: opts.codec === "hevc" ? "hevc_nvenc" : "h264_amf",
-      msReceive: jitter(3.1, 0.2), msConvert: jitter(5, 0.2), msEncode: jitter(27.4, 0.1),
+      ...base, mbps: jitter(18.4, 0.15), codec: opts.codec === "hevc" ? "HEVC" : "H264",
+      receivers: 1, encoder: opts.codec === "hevc" ? "hevc_nvenc" : "libx264",
+      msReceive: jitter(9.1, 0.2), msConvert: jitter(0.5, 0.2), msEncode: jitter(3.8, 0.1),
     };
   }
-  return { ...base, mbps: jitter(6.2), codec: "VMX1", receivers: 1, decoder: "h264", msReceive: jitter(2.2, 0.2), msConvert: jitter(4.1, 0.2), msEncode: jitter(11.3, 0.2) };
+  return { ...base, mbps: jitter(42.5, 0.1), codec: "H264", receivers: 1, decoder: "h264:d3d11va", msReceive: jitter(2.2, 0.2), msConvert: jitter(9.4, 0.2), msEncode: jitter(2.4, 0.2) };
 }
 
 function makeBridge(kind: "out" | "in", source: string, opts: { kbps?: number; codec?: string } = {}): Bridge {
@@ -132,39 +131,38 @@ function makeBridge(kind: "out" | "in", source: string, opts: { kbps?: number; c
   };
 }
 
+// Like the real server: "*" bridges carry one stream per source, each idle until something watches it.
+// Every other stream is watched, so both states show; brokenStream puts one out stream in error.
+let brokenStream = false;
+
 function tickBridges() {
   for (const b of bridges) {
     if (b.state === "error") continue;
     const age = Date.now() - b.started;
-    if (b.state === "starting" && age > 1500) b.state = b.kind === "out" ? "running" : "waiting";
-    if (b.kind === "out" && b.state === "running") b.stats = statsFor("out", { kbps: b.bitrateKbps, codec: b.codec });
-    if (b.kind === "in") {
-      const cams = sources.filter((s) => s.type === "omtx" && (b.source === "*" || s.name === b.source));
-      if (cams.length && age > 1500) b.state = "running";
-      if (b.source === "*") {
-        b.streams = cams.map((c) => ({ source: c.name, publishedAs: `${HOST} (${c.label})`, stats: statsFor("in") }));
-        b.publishedAs = b.streams.map((s) => s.publishedAs);
-        b.stats = null;
-      } else if (b.state === "running") {
-        b.stats = statsFor("in");
-        b.streams = [{ source: b.source, publishedAs: b.publishedAs[0], stats: b.stats }];
-      }
-    }
+    if (b.state === "starting" && age > 1500) b.state = "running";
+    const matches = sources.filter((s) =>
+      b.kind === "out" ? s.type === "omt" && s.local && (b.source === "*" || s.name === b.source)
+                       : s.type === "omtx" && !s.local && (b.source === "*" || s.name === b.source));
+    b.streams = matches.map((c, i) => {
+      const watched = i % 2 === 0;
+      const broken = brokenStream && b.kind === "out" && i === matches.length - 1;
+      const st = broken
+        ? { state: "error", error: "No usable encoder. h264_nvenc: Cannot load nvcuda.dll; h264_qsv: unsupported device" }
+        : watched ? { ...statsFor(b.kind, { kbps: b.bitrateKbps, codec: b.codec }), state: "running" }
+        : { state: "idle", fps: 0, mbps: 0, width: 1920, height: 1080, codec: "H264", receivers: 0, keyframes: 0, drops: 0 };
+      return { source: c.name, publishedAs: b.kind === "out" ? `${c.label} omtx` : `${HOST} (${c.label})`, stats: st };
+    });
+    b.publishedAs = b.streams.map((s) => s.publishedAs);
+    b.stats = b.source === "*" ? null : b.streams[0]?.stats ?? null;
   }
 }
 
 function seedBridges(mode: string) {
   bridges = [];
-  const omt = sources.filter((s) => s.type === "omt");
-  if (mode === "running" || mode === "mixed") {
-    if (omt[0]) bridges.push({ ...makeBridge("out", omt[0].name, { kbps: 10000, codec: "h264" }), started: 0 });
-    bridges.push({ ...makeBridge("in", "*"), started: 0 });
-  }
-  if (mode === "error" || mode === "mixed") {
-    const b = makeBridge("out", omt[1]?.name ?? "FIMVIDEO3 (vMix - Output 2)", { kbps: 8000, codec: "hevc" });
-    b.state = "error";
-    b.error = "No HEVC encoder on this PC (tried hevc_nvenc, hevc_qsv, hevc_amf)";
-    bridges.push(b);
+  brokenStream = mode === "error" || mode === "mixed";
+  if (mode !== "none") {
+    bridges.push({ ...makeBridge("out", "*"), started: 0 });
+    if (mode !== "error") bridges.push({ ...makeBridge("in", "*"), started: 0 });
   }
   tickBridges();
 }

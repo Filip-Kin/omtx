@@ -39,7 +39,6 @@ function useMedia(q: string): boolean {
 
 const NAV: { page: Route["page"]; href: string; label: string }[] = [
   { page: "sources", href: "#/sources", label: "Sources" },
-  { page: "watch", href: "#/watch", label: "Watch" },
   { page: "bridges", href: "#/bridges", label: "Bridges" },
 ];
 
@@ -69,7 +68,6 @@ export function App() {
     return () => removeEventListener("keydown", onKey);
   }, [open]);
 
-  const bridgeCount = state?.bridges.length ?? 0;
   const drawerHidden = narrow && !open;
 
   return (
@@ -88,9 +86,9 @@ export function App() {
         <a className="brand" href="#/sources">
           omtx
         </a>
-        <span className={`host-chip${online ? "" : " offline"}`} role="status">
+        <span className="host" role="status">
           {state?.host ? <span className="host-name">{state.host}</span> : null}
-          {!online ? <span className="offline-tag">Offline</span> : null}
+          {!online ? <span className="offline">Offline</span> : null}
         </span>
         <nav
           id="nav"
@@ -104,15 +102,13 @@ export function App() {
             <a
               key={n.page}
               href={n.href}
-              className={route.page === n.page ? "active" : undefined}
+              className={route.page === n.page || (n.page === "sources" && route.page === "watch") ? "active" : undefined}
               aria-current={route.page === n.page ? "page" : undefined}
               onClick={() => setOpen(false)}
             >
               {n.label}
-              {n.page === "bridges" && bridgeCount > 0 ? <span className="count">{bridgeCount}</span> : null}
             </a>
           ))}
-          {state?.version ? <span className="version">v{state.version}</span> : null}
         </nav>
         <div className="scrim" hidden={!open} onClick={() => setOpen(false)} />
       </header>
