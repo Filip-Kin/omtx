@@ -1,0 +1,6 @@
+#!/bin/bash
+# Same arguments as ndi-play-wrapper / omt-play-wrapper:
+#   omtx-play-wrapper <source> [high|medium|low] [--window WxH+X+Y]
+DIR="$(dirname "$(readlink -f "$0")")"
+export LD_LIBRARY_PATH="$DIR:${LD_LIBRARY_PATH:-}"
+exec "$DIR/omtx" play "$@"

@@ -2,7 +2,7 @@ bin/
 obj/
 dist/
 .gradle/
-build/
+android/**/build/
 local.properties
 *.apk
 !dist/.keep

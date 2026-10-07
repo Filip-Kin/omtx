@@ -29,4 +29,9 @@
     <ProjectReference Include="../../libomtnet/libomtnet.csproj" />
   </ItemGroup>
 
+  <!-- omtx ui: the built page (tools/ui-web/dist) is embedded as ui/<path> -->
+  <ItemGroup>
+    <EmbeddedResource Include="../ui-web/dist/**/*" LogicalName="ui/$([System.String]::Copy('%(RecursiveDir)%(Filename)%(Extension)').Replace('\','/'))" />
+  </ItemGroup>
+
 </Project>

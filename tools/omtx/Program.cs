@@ -27,6 +27,9 @@ internal static class Program
       Decode omtx sources (e.g. phones) and republish each as a stock OMT source for vMix/OBS.
       With no source given, bridges every omtx source that appears on the network.
 
+  omtx ui [--port 6390] [--listen 127.0.0.1] [--no-open] [--ffmpeg DIR]
+      Local web page: every OMT and omtx source with previews and stats, and out/in bridges.
+
   omtx bars [--name NAME] [--size WxH] [--fps N] [--omtx] [--noise] [--encoder LIST] [--ffmpeg DIR]
       Test pattern with a tone. Stock OMT (VMX) by default, omtx H.264 with --omtx. The bottom
       strip is the monotonic clock in ms (16 bits) for latency checks; --noise fills the top third.
@@ -47,6 +50,7 @@ internal static class Program
                 "out" => OutCmd.Run(a),
                 "in" => InCmd.Run(a),
                 "bars" => BarsCmd.Run(a),
+                "ui" => UiCmd.Run(a),
                 "--version" or "version" => Print(Version),
                 _ => Fail("Unknown command: " + args[0] + "\n\n" + Usage),
             };
@@ -88,7 +92,7 @@ internal sealed class Args
 {
     public readonly List<string> Positional = new();
     private readonly Dictionary<string, string> named = new();
-    private static readonly HashSet<string> Flags = new() { "--stats", "--no-audio", "--omtx", "--intra-refresh", "--noise", "--audio" };
+    private static readonly HashSet<string> Flags = new() { "--stats", "--no-audio", "--omtx", "--intra-refresh", "--noise", "--audio", "--no-open" };
 
     public Args(string[] a)
     {

@@ -1,0 +1,8 @@
+tools/ui-web/node_modules
+tools/ui-web/screenshots
+android
+dist
+tests/clips
+tests/shots
+**/bin
+**/obj
