@@ -55,6 +55,9 @@ namespace libomtnet
         public static int NETWORK_ASYNC_BUFFER_META_ONLY = 1024;
 
         public static int VIDEO_FRAME_POOL_COUNT = 4;
+        //omtx: H.264/HEVC receive queue grows to this many frames before dropping (a second at 60 fps)
+        public static int VIDEO_FRAME_POOL_INTERFRAME_MAX = 60;
+        public static int VIDEO_FRAME_POOL_INTERFRAME_SIZE = 256 * 1024;
 
         public static int VIDEO_MIN_SIZE = 65536;
         public static int VIDEO_MAX_SIZE = 10485760;

@@ -25,6 +25,7 @@ internal static class ProbeCmd
         var frame = new OMTMediaFrame();
         var wire = new List<int>(); var shown = new List<int>(); int bad = 0;
         string codec = "";
+        var gaps = new List<int>(); long lastShown = 0;
         var end = DateTime.UtcNow.AddSeconds(seconds);
         int Read(IntPtr p, int stride, int w, int h)
         {
@@ -41,6 +42,12 @@ internal static class ProbeCmd
         }
         int Lat(int bits) => (int)(((long)(DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() + offset) - bits) & 0xFFFF);
         void Add(List<int> l, int v) { if (v < 5000) l.Add(v); else bad++; }
+        void Shown()
+        {
+            long now = Environment.TickCount64;
+            if (lastShown != 0) gaps.Add((int)(now - lastShown));
+            lastShown = now;
+        }
 
         while (Program.Running && DateTime.UtcNow < end)
         {
@@ -54,7 +61,7 @@ internal static class ProbeCmd
                 if (!dec.Decode(frame.Data, frame.DataLength, frame.Timestamp, (p, stride, w, h, pts) =>
                     {
                         int bits = Read(p, stride, w, h);
-                        Add(shown, Lat(bits));
+                        Add(shown, Lat(bits)); Shown();
                         // wire time of the frame we just decoded: decode time is now - arrived
                         Add(wire, (int)((((long)(arrived + offset)) - bits) & 0xFFFF));
                     }))
@@ -64,13 +71,15 @@ internal static class ProbeCmd
             {
                 codec = "VMX1";
                 // libomtnet has already decoded VMX inside Receive: count that as decode, not wire
-                Add(shown, Lat(Read(frame.Data, frame.Stride, frame.Width, frame.Height)));
+                Add(shown, Lat(Read(frame.Data, frame.Stride, frame.Width, frame.Height))); Shown();
             }
         }
         dec?.Dispose();
         Console.WriteLine($"{a.Positional[0]}  {codec}  clock offset {offset:F0} ms  bad {bad}");
         Print("wire   ", wire);
         Print("decoded", shown);
+        if (gaps.Count > 0)
+            Console.WriteLine($"  freezes >100 ms {gaps.Count(g => g > 100)}  frozen {gaps.Where(g => g > 100).Sum()} ms  longest {gaps.Max()} ms  dropped {recv.GetVideoStatistics().FramesDropped}");
         return shown.Count > 0 ? 0 : 1;
     }
 

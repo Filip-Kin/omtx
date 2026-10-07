@@ -16,6 +16,7 @@ internal static class BarsCmd
         int fps = a.Int("--fps", 30);
         bool omtx = a.Has("--omtx");
         bool noise = a.Has("--noise");
+        bool texture = a.Has("--texture");
         string name = a.Get("--name", omtx ? "Bars omtx" : "Bars");
 
         using var send = omtx ? new OMTSend(name, OMTQuality.Default, OMTAddress.SERVICE_TYPE_OMTX) : new OMTSend(name, OMTQuality.Default);
@@ -29,7 +30,7 @@ internal static class BarsCmd
         {
             Av.Load(a.Get("--ffmpeg"));
             rc = new RateControl(3_000_000, a.Int("--bitrate", 10000) * 1000L, a.Int("--bitrate", 10000) * 1000L);
-            enc = new VideoEncoder(a.List("--encoder", "libx264"), false, w, h, fps, 1, rc.Current, false, 1.0);
+            enc = new VideoEncoder(a.List("--encoder", "libx264"), false, w, h, fps, 1, rc.Current, a.Has("--intra-refresh"), a.Dbl("--vbv", 1.0));
             annexB = new AnnexB(false);
             Console.Error.WriteLine("omtx bars: encoder " + enc.Name);
         }
@@ -44,11 +45,16 @@ internal static class BarsCmd
         var vf = new OMTMediaFrame();
         var af = new OMTMediaFrame();
         var outFrame = new OMTMediaFrame();
+        bool stats = a.Has("--stats");
+        var sw = new System.Diagnostics.Stopwatch(); var statTimer = System.Diagnostics.Stopwatch.StartNew();
+        double drawMs = 0, encMs = 0, sendMs = 0; long statN = 0;
         try
         {
             while (Program.Running)
             {
-                Draw(pic, w, h, stride, n, noise);
+                sw.Restart();
+                Draw(pic, w, h, stride, n, noise, texture);
+                drawMs += sw.Elapsed.TotalMilliseconds;
 
                 if (send.Connections > 0)
                 {
@@ -79,8 +85,10 @@ internal static class BarsCmd
                     if (send.Connections == 0) { Thread.Sleep(1000 / fps); n++; continue; }
                     if (rc.Update(send.GetCongestionDrops(), send.GetMaxVideoFramesInFlight(), send.ReceiverSuggestedQuality, sent.BitsPerSecond)) enc.SetRate(rc.Current);
                     bool force = send.ConsumeKeyframeRequest();
+                    sw.Restart();
                     enc.Encode(pic, stride, w, h, Av.PixFmt("uyvy422"), -1, force, (buf, len, key, ts) =>
                     {
+                        encMs += sw.Elapsed.TotalMilliseconds; sw.Restart();
                         byte[] au = annexB.Process(buf, len, out bool keyNal);
                         sent.Add(au.Length);
                         var handle = GCHandle.Alloc(au, GCHandleType.Pinned);
@@ -92,11 +100,17 @@ internal static class BarsCmd
                             outFrame.Flags = keyNal ? OMTVideoFlags.Keyframe : OMTVideoFlags.None;
                             outFrame.Data = handle.AddrOfPinnedObject(); outFrame.DataLength = au.Length;
                             send.Send(outFrame);
+                            sendMs += sw.Elapsed.TotalMilliseconds;
                         }
                         finally { handle.Free(); }
                     });
                 }
-                n++;
+                n++; statN++;
+                if (stats && statTimer.ElapsedMilliseconds >= 5000)
+                {
+                    Console.Error.WriteLine($"[bars] {statN / statTimer.Elapsed.TotalSeconds:F1} fps  draw {drawMs / statN:F1} ms  encode {encMs / statN:F1} ms  send {sendMs / statN:F1} ms{(rc != null ? $"  {sent.BitsPerSecond / 1e6:F1} Mbps" : "")}");
+                    statTimer.Restart(); statN = 0; drawMs = encMs = sendMs = 0;
+                }
             }
         }
         finally
@@ -119,8 +133,9 @@ internal static class BarsCmd
 
     static ulong rng = 0x9E3779B97F4A7C15;
 
-    static unsafe void Draw(IntPtr pic, int w, int h, int stride, long n, bool noise)
+    static unsafe void Draw(IntPtr pic, int w, int h, int stride, long n, bool noise, bool texture)
     {
+        if (texture) rng = 0x9E3779B97F4A7C15; // same noise every frame: costly keyframes, cheap P-frames, like a camera on a tripod
         byte* p = (byte*)pic;
         int box = h / 6;
         int bx = (int)(n * 8 % Math.Max(1, w - box)) & ~1;
@@ -136,7 +151,7 @@ internal static class BarsCmd
                 if (y >= h - h / 12) c = ((clock >> (15 - x * 16 / w)) & 1) == 1 ? ((byte)235, (byte)128, (byte)128) : ((byte)16, (byte)128, (byte)128);
                 row[x * 2] = c.u; row[x * 2 + 1] = c.y; row[x * 2 + 2] = c.v; row[x * 2 + 3] = c.y;
             }
-            if (noise && y < h / 3)
+            if ((noise || texture) && y < h / 3)
             {
                 // worst case for an encoder: fresh noise in the top third of every frame
                 ulong* q = (ulong*)row;

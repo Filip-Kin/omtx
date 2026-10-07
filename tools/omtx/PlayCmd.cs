@@ -183,11 +183,19 @@ internal static class PlayCmd
         double decMs = 0, showMs = 0;
         var t = new Stopwatch();
         bool warnedStock = false;
+        bool pending = false; // a picture is in the texture and not yet presented
         try
         {
             while (Program.Running && win.Pump())
             {
-                if (!recv.Receive(OMTFrameType.Video, 20, ref frame) || frame.Type != OMTFrameType.Video) continue;
+                // Block only when nothing waits to be shown. Frames that queued up (after a Wi-Fi
+                // stall, or while vsync held the last present) are all decoded but only the newest
+                // is presented, so a burst costs one refresh instead of one refresh per frame.
+                if (!recv.Receive(OMTFrameType.Video, pending ? 0 : 20, ref frame) || frame.Type != OMTFrameType.Video)
+                {
+                    if (pending) { t.Restart(); win.Present(); showMs += t.Elapsed.TotalMilliseconds; pending = false; }
+                    continue;
+                }
                 if (frame.Codec != (int)OMTCodec.H264 && frame.Codec != (int)OMTCodec.HEVC)
                 {
                     if (!warnedStock) { Console.Error.WriteLine("omtx play: stock OMT source (not H.264/HEVC); use omt-play for it"); warnedStock = true; }
@@ -224,8 +232,8 @@ internal static class PlayCmd
                         Av.SwsScale(sws, d, l, h, Av.FrameData(conv), Av.FrameLinesize(conv));
                         d = Av.FrameData(conv); l = Av.FrameLinesize(conv);
                     }
-                    win.Show(d[0], l[0], d[1], l[1], d[2], l[2], w, h);
-                    showMs += t.Elapsed.TotalMilliseconds;
+                    win.Upload(d[0], l[0], d[1], l[1], d[2], l[2], w, h);
+                    pending = true;
                 });
                 if (!ok) { recv.RequestKeyframe(); waitKey = true; }
 

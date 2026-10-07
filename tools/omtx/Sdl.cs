@@ -98,8 +98,8 @@ internal sealed unsafe class SdlWindow : IDisposable
         p_ShowCursor(0);
     }
 
-    /// <summary>Draws one I420 picture now. Planes are Y, U, V with their pitches.</summary>
-    public void Show(byte* y, int yp, byte* u, int up, byte* v, int vp, int w, int h)
+    /// <summary>Copies one I420 picture into the texture (shown on the next Present). Planes are Y, U, V with their pitches.</summary>
+    public void Upload(byte* y, int yp, byte* u, int up, byte* v, int vp, int w, int h)
     {
         if (tex == IntPtr.Zero || w != texW || h != texH)
         {
@@ -110,6 +110,11 @@ internal sealed unsafe class SdlWindow : IDisposable
             texW = w; texH = h;
         }
         p_UpdateYUVTexture(tex, null, y, yp, u, up, v, vp);
+    }
+
+    public void Present()
+    {
+        if (tex == IntPtr.Zero) return;
         p_RenderClear(ren);
         p_RenderCopy(ren, tex, null, null);
         p_RenderPresent(ren);

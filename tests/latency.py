@@ -1,11 +1,12 @@
-# Take N screenshots of the X display, decode the 16-bit ms clock strip from each, print latency.
+# Take N screenshots of the X display, decode the 16-bit ms clock strip (low bits of Unix ms, as
+# omtx bars draws it) from each, print latency.
 import subprocess, time, sys, statistics
 n = int(sys.argv[1]); label = sys.argv[2]
 out = []
 for i in range(n):
-    t0 = time.monotonic()
+    t0 = time.time()
     raw = subprocess.run(["import", "-window", "root", "-depth", "8", "gray:-"], capture_output=True).stdout
-    t1 = time.monotonic()
+    t1 = time.time()
     W, H = 1280, 720
     y = H - 20
     bits = 0

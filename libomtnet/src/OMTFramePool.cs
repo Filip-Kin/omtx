@@ -31,9 +31,11 @@ namespace libomtnet
     internal class OMTFramePool : OMTBase
     {
         Queue<OMTFrame> pool;
+        int total;
         public OMTFramePool(int count, int maxDataLength, bool resizable)
         {
             pool = new Queue<OMTFrame>();
+            total = count;
             for (int i = 0; i < count; i++) {
                 pool.Enqueue(new OMTFrame(maxDataLength, resizable));
             }
@@ -76,5 +78,18 @@ namespace libomtnet
         }
 
         public int Count { get { lock (pool) { return pool.Count; } } }
+
+        /// <summary>Frames this pool owns, in use or not.</summary>
+        public int Total { get { lock (pool) { return total; } } }
+
+        //omtx: adds one resizable frame (inter-frame channels grow on demand, see OMTChannel)
+        public void Grow(int dataLength)
+        {
+            lock (pool)
+            {
+                pool.Enqueue(new OMTFrame(dataLength, true));
+                total += 1;
+            }
+        }
     }
 }

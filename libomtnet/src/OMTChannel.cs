@@ -598,6 +598,14 @@ namespace libomtnet
                                         }
                                         else
                                         {
+                                            //omtx: an H.264/HEVC frame dropped here costs a keyframe round trip and a
+                                            //frozen picture, and these frames are small, so the queue grows instead
+                                            //(up to about a second): a burst after a Wi-Fi stall is caught up by the
+                                            //application rather than dropped. Stock VMX keeps the 4-frame pool.
+                                            if (interFrame && framePool.Count == 0 && framePool.Total < OMTConstants.VIDEO_FRAME_POOL_INTERFRAME_MAX)
+                                            {
+                                                framePool.Grow(OMTConstants.VIDEO_FRAME_POOL_INTERFRAME_SIZE);
+                                            }
                                             if (framePool.Count > 0)
                                             {
                                                 lock (readyFrames)

@@ -31,9 +31,11 @@ internal static class Program
   omtx ui [--port 6390] [--listen 127.0.0.1] [--no-open] [--ffmpeg DIR]
       Local web page: every OMT and omtx source with previews and stats, and out/in bridges.
 
-  omtx bars [--name NAME] [--size WxH] [--fps N] [--omtx] [--noise] [--encoder LIST] [--ffmpeg DIR]
+  omtx bars [--name NAME] [--size WxH] [--fps N] [--omtx] [--noise|--texture] [--encoder LIST]
+           [--bitrate KBPS] [--intra-refresh] [--vbv FRAMES] [--ffmpeg DIR]
       Test pattern with a tone. Stock OMT (VMX) by default, omtx H.264 with --omtx. The bottom
-      strip is the wall clock in ms (16 bits) for latency checks; --noise fills the top third.
+      strip is the wall clock in ms (16 bits) for latency checks; --noise fills the top third with
+      fresh noise every frame, --texture with the same noise every frame.
 
   omtx probe <source> [--seconds 10] [--strip X0,X1,Y] [--clock http://HOST:6390] [--ffmpeg DIR]
       Latency of a source carrying the bars clock strip, read after decode in this process (no
@@ -99,7 +101,7 @@ internal sealed class Args
 {
     public readonly List<string> Positional = new();
     private readonly Dictionary<string, string> named = new();
-    private static readonly HashSet<string> Flags = new() { "--stats", "--no-audio", "--omtx", "--intra-refresh", "--noise", "--audio", "--no-open", "--no-vsync" };
+    private static readonly HashSet<string> Flags = new() { "--stats", "--no-audio", "--omtx", "--intra-refresh", "--noise", "--audio", "--no-open", "--no-vsync", "--texture" };
 
     public Args(string[] a)
     {
