@@ -18,7 +18,7 @@ internal static class Program
       <source> is a name ""HOST (Name)"", omtx://host:port or host:port.
 
   omtx out [<stock OMT source>] [--name NAME] [--codec h264|hevc] [--bitrate KBPS] [--min KBPS]
-           [--encoder LIST] [--intra-refresh] [--vbv FRAMES] [--ffmpeg DIR] [--stats]
+           [--encoder LIST] [--enc-opts K=V,...] [--intra-refresh] [--vbv FRAMES] [--ffmpeg DIR] [--stats]
       Re-encode a stock OMT source (e.g. a vMix output) as omtx. With no source, takes this PC's
       vMix OMT output (Output 1 first). Default encoders tried in order:
       h264_nvenc, h264_qsv, h264_amf, libx264. Default 10000 kbps ceiling, 3000 kbps floor.

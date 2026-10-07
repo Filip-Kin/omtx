@@ -20,13 +20,19 @@ internal sealed unsafe class VideoEncoder : IDisposable
     private long bitrate;
     private readonly double vbvFrames;
     private readonly bool bt601;
+    private readonly IReadOnlyList<(string key, string value)> extraOptions;
     private readonly Queue<long> timestamps = new Queue<long>();
     private byte[] outBuf = new byte[1 << 20];
 
+    /// <summary>Milliseconds spent in the last frame's pixel conversion and encoder call (for --stats).</summary>
+    public double LastConvertMs, LastEncodeMs, LastSendMs;
+
     /// <param name="encoders">Names to try in order, e.g. h264_nvenc then libx264.</param>
     public VideoEncoder(IEnumerable<string> encoders, bool hevc, int width, int height, int fpsN, int fpsD,
-                        long bitrate, bool intraRefresh, double vbvFrames, bool bt601 = false)
+                        long bitrate, bool intraRefresh, double vbvFrames, bool bt601 = false,
+                        IReadOnlyList<(string key, string value)> extraOptions = null)
     {
+        this.extraOptions = extraOptions ?? Array.Empty<(string, string)>();
         this.bt601 = bt601;
         Hevc = hevc; Width = width; Height = height; FpsN = fpsN; FpsD = fpsD;
         this.bitrate = bitrate; this.vbvFrames = vbvFrames;
@@ -101,6 +107,15 @@ internal sealed unsafe class VideoEncoder : IDisposable
         {
             Av.OptSet(ctx, "usage", "ultralowlatency");
             Av.OptSet(ctx, "rc", "cbr");
+            // AMF spells it forced_idr; without it a requested keyframe is a plain I-frame, not an IDR,
+            // and a receiver waiting to join or recover never gets one.
+            Av.OptSetInt(ctx, "forced_idr", 1);
+        }
+        // --enc-opts key=value,...: applied last, so they override the defaults above
+        foreach (var (k, v) in extraOptions)
+        {
+            int r = Av.OptSet(ctx, k, v);
+            Console.Error.WriteLine($"omtx: encoder option {k}={v}" + (r < 0 ? " (" + Av.Err(r) + ")" : ""));
         }
     }
 
@@ -135,6 +150,7 @@ internal sealed unsafe class VideoEncoder : IDisposable
             swsSrcFmt = srcFmt; swsSrcW = srcW; swsSrcH = srcH;
             if (sws == IntPtr.Zero) throw new InvalidOperationException("sws_getContext failed");
         }
+        long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         Av.FrameMakeWritable(frame);
         byte** srcData = stackalloc byte*[4];
         int* srcStride = stackalloc int[4];
@@ -146,13 +162,17 @@ internal sealed unsafe class VideoEncoder : IDisposable
             srcStride[1] = stride;
         }
         Av.SwsScale(sws, srcData, srcStride, srcH, Av.FrameData(frame), Av.FrameLinesize(frame));
+        long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
+        LastConvertMs = (t1 - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
 
         Av.FramePts(frame) = pts++;
         Av.FramePictType(frame) = forceKeyframe ? Av.AV_PICTURE_TYPE_I : 0;
         timestamps.Enqueue(timestamp);
         int r = Av.SendFrame(ctx, frame);
+        LastSendMs = (System.Diagnostics.Stopwatch.GetTimestamp() - t1) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
         if (r < 0) { timestamps.Clear(); throw new InvalidOperationException("avcodec_send_frame: " + Av.Err(r)); }
         Drain(onPacket);
+        LastEncodeMs = (System.Diagnostics.Stopwatch.GetTimestamp() - t1) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
     }
 
     private void Drain(Action<byte[], int, bool, long> onPacket)
