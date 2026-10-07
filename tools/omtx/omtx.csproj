@@ -8,7 +8,7 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <AssemblyName>omtx</AssemblyName>
     <RootNamespace>Omtx</RootNamespace>
-    <Version>0.2.3</Version>
+    <Version>0.2.4</Version>
     <InvariantGlobalization>true</InvariantGlobalization>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>

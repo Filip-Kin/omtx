@@ -95,7 +95,10 @@ internal sealed unsafe class SdlWindow : IDisposable
             if (p_GetDesktopDisplayMode(display, mode) != 0 && display != 0) { display = 0; p_GetDesktopDisplayMode(0, mode); }
             if (mode[1] > 0) { w = mode[1]; h = mode[2]; }
             x = y = WINDOWPOS_UNDEFINED | display;
-            flags |= WINDOW_FULLSCREEN_DESKTOP;
+            // Above other windows: the projector daemon fullscreens a Chromium kiosk on the same
+            // display and can navigate it after the player started, which raised the white page
+            // over the video (filip-display-1).
+            flags |= WINDOW_FULLSCREEN_DESKTOP | WINDOW_ALWAYS_ON_TOP;
         }
         fixed (byte* t = Z(title)) win = p_CreateWindow(t, x, y, w, h, flags);
         if (win == IntPtr.Zero) throw new InvalidOperationException("SDL_CreateWindow: " + Error());
