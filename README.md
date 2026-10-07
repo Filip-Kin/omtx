@@ -34,34 +34,51 @@ source they cannot decode.
 
 **Phone**: install `dist/omtx-camera.apk` (sideload), set a source name, Start.
 
-**Any Linux box with ffplay** (Debian 11/12/13): unpack `dist/omtx-linux-x64.tar.gz`, then
+**Any Linux box** (Debian 11/12/13): unpack `dist/omtx-linux-x64.tar.gz`, then
 
 ```
 ./omtx list
 ./omtx play "FIMVIDEO3 (vMix - Output 1 omtx)"        # fullscreen; --window 960x540+0+0 for a window
 ```
 
-`play` is video only by default; `--audio` adds sound at the cost of latency (ffplay's audio
-clock keeps whatever delay builds up). Needs `ffmpeg` (Debian's package includes ffplay) and
-`libavahi-client3`.
+`play` is video only by default: it decodes with the system libavcodec and draws each picture
+with SDL2 as soon as it is decoded. `--audio` (or `--ffplay`) plays through ffplay instead, at
+the cost of latency (ffplay's audio clock keeps whatever delay builds up). Needs `ffmpeg`
+(Debian's package brings libavcodec, SDL2 and ffplay) and `libavahi-client3`.
+
+`omtx probe <source>` reads the `omtx bars` clock strip after an in-process decode and prints
+per-hop latency, with no display in the loop (`--strip` when bars sits inside a vMix layout,
+`--clock http://HOST:6390` to correct for the bars machine's clock through its `omtx ui`).
 
 **Projector display**: branch `omtx-play` in `/home/filip/frc-projector-display-omtx`, on top
 of the unreleased `omt-play` branch. omtx sources show up in the phone controller as
 `omtx: NAME` with High / Medium / Low. It installs `omtx-play-linux-x86_64.tar.gz` from the
 `frc-display-assets` bucket, which is not uploaded yet: it ships with the omt-play release.
 
-## Measured (loopback, Docker, Xvfb + real ffplay)
+## Measured
 
-Latency is from the moment the test pattern draws a frame to that frame on screen, read back
-from a clock strip in the picture (`omtx bars`), libx264 software encode:
+Latency is from the moment `omtx bars` draws a frame to that frame decoded (`omtx probe`) or on
+screen (screenshots of the clock strip), 1080p60, libx264.
 
-| Path | 30 fps | 60 fps |
-|---|---|---|
-| omtx bars -> play | 60-90 ms | 30-60 ms |
-| stock VMX bars -> omtx out -> play | 55-85 ms | 28-58 ms |
+Through vMix on the laptop (bars as a vMix input in a PiP, vMix Output 1, receiver on the NAS
+over the LAN), p50:
 
-Link squeezed to 4 Mbit/s under a ~5 Mbps stream: 1 dropped frame, 1 keyframe, bitrate cut to
-3.3 Mbps, latency held at 66-97 ms, picture clean. Released: climbs back to the ceiling.
+| Hop | Latency |
+|---|---|
+| bars straight to the NAS (stock VMX) | 21 ms |
+| vMix Output 1, stock OMT | 82 ms |
+| vMix Output 1 through `omtx out` | 91 ms |
+| same, on screen with `omtx play` (SDL2, Xvfb) | 121 ms |
+
+vMix itself adds about 60 ms (input to output) and has p99 spikes near 200 ms; the omtx hop adds
+about 9 ms. With ffplay as the player the last row was 155 ms.
+
+Loopback in Docker (Xvfb, `omtx play`): bars -> play at 60 fps, median 20-52 ms (the range is
+the screenshot capture window).
+
+Simulated Wi-Fi (40 Mbit/s, 3 ms, a 300 ms near-stall every 5 s, 720p noise at 8 Mbps): 0 frames
+dropped, 60 fps held, screen p50 54 ms, p90 74 ms. The tail is the stall itself queued in the
+bottleneck buffer. Intra-refresh and BBR made no measurable difference in this simulation.
 
 Also checked: FFmpeg 4.3, 7.1 and 8.1 (exact 75% bar colours after two encode/decode
 generations), the Android sender's Kotlin wire code against the C# receiver (H.264 and HEVC),
@@ -71,13 +88,13 @@ libvmx.dll).
 
 ## Not yet run on real hardware
 
-- NVENC / NVDEC on the RTX 3070 (only x264 and software decode were exercised).
-- Windows DNS-SD for `_omtx._tcp` (Wine lacks `DnsServiceRegister`; the code path is the same
-  API vMix's OMT already uses).
-- The Android app on a phone: camera session, encoder settings, NSD, `TCP_NOTSENT_LOWAT`.
-- Real Wi-Fi.
-- vMix's exact OMT source names; `omtx out` with no argument picks any local source containing
-  "vMix", Output 1 first, and lists the names when there are several.
+- NVENC / NVDEC on the RTX 3070 (the laptop has AMD only: AMF tops out near 30 fps at 1080p
+  through FFmpeg's system-memory upload, so libx264 is ahead of it in the default order).
+- Real Wi-Fi to a projector.
+- SDL2 on real projector hardware (vsync, GPU renderer); only Xvfb so far.
+
+Run on real hardware: Windows DNS-SD for both service types, the Android app on a Pixel 9 Pro
+into vMix, vMix Output 1 through `omtx out`, the `omtx ui` page.
 
 ## Build
 
