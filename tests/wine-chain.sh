@@ -11,7 +11,8 @@ $W in omtx://127.0.0.1:6401 --stats > /tmp/in.log 2>&1 &
 sleep 4
 $W out omt://127.0.0.1:6402 --encoder libx264 --name OUT2 --stats > /tmp/out2.log 2>&1 &
 sleep 4
-# a receiver for OUT2 so it encodes: the linux build is not usable here, so use a second in
 $W in omtx://127.0.0.1:6403 --stats > /tmp/in2.log 2>&1 &
-sleep 14
-for f in bars out in out2 in2; do echo "--- $f"; tail -4 /tmp/$f.log; done
+sleep 4
+# every bridge works only while watched: this viewer at the end wakes the whole chain
+$W probe omt://127.0.0.1:6404 --seconds 14 > /tmp/probe.log 2>&1
+for f in bars out in out2 in2 probe; do echo "--- $f"; tail -4 /tmp/$f.log; done

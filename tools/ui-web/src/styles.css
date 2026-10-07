@@ -278,6 +278,7 @@ main.stale .thumb, main.stale .stage, main.stale .statline, main.stale .stats dl
 .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
 .pill.running { color: var(--ok); }
 .pill.starting, .pill.waiting { color: var(--warn); }
+.pill.idle, .pill.stopped { color: var(--muted, #888); }
 .pill.error { color: var(--bad); }
 
 .route { display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px; margin-top: 10px; font-size: 1.02rem; min-width: 0; }

@@ -20,16 +20,19 @@ internal static class Program
 
   omtx out [<stock OMT source>] [--name NAME] [--codec h264|hevc] [--bitrate KBPS] [--min KBPS]
            [--encoder LIST] [--enc-opts K=V,...] [--pixfmt nv12|bgra] [--intra-refresh] [--vbv FRAMES] [--ffmpeg DIR] [--stats]
-      Re-encode a stock OMT source (e.g. a vMix output) as omtx. With no source, takes this PC's
-      vMix OMT output (Output 1 first). Default encoders tried in order:
+      Re-encode a stock OMT source (e.g. a vMix output) as omtx. With no source, every OMT source
+      on this PC. Each one connects and encodes only while an omtx receiver watches it. Default
+      encoders tried in order:
       h264_nvenc, h264_qsv, libx264, h264_amf. Default 10000 kbps ceiling, 3000 kbps floor.
 
   omtx in [<omtx source> ...] [--decoder LIST] [--ffmpeg DIR] [--stats]
       Decode omtx sources (e.g. phones) and republish each as a stock OMT source for vMix/OBS.
-      With no source given, bridges every omtx source that appears on the network.
+      With no source given, bridges every omtx source that appears on the network. Each one
+      connects to its camera only while something (vMix) has the OMT source open.
 
-  omtx ui [--port 6390] [--listen 127.0.0.1] [--no-open] [--ffmpeg DIR]
+  omtx ui [--port 6390] [--listen 127.0.0.1] [--no-open] [--no-auto] [--ffmpeg DIR]
       Local web page: every OMT and omtx source with previews and stats, and out/in bridges.
+      Unless --no-auto, also runs both directions: ""out"" and ""in"" with no source, as above.
 
   omtx bars [--name NAME] [--size WxH] [--fps N] [--omtx] [--noise|--texture] [--encoder LIST]
            [--bitrate KBPS] [--intra-refresh] [--vbv FRAMES] [--ffmpeg DIR]
@@ -101,7 +104,7 @@ internal sealed class Args
 {
     public readonly List<string> Positional = new();
     private readonly Dictionary<string, string> named = new();
-    private static readonly HashSet<string> Flags = new() { "--stats", "--no-audio", "--omtx", "--intra-refresh", "--noise", "--audio", "--no-open", "--no-vsync", "--texture" };
+    private static readonly HashSet<string> Flags = new() { "--stats", "--no-audio", "--omtx", "--intra-refresh", "--noise", "--audio", "--no-open", "--no-vsync", "--texture", "--no-auto" };
 
     public Args(string[] a)
     {

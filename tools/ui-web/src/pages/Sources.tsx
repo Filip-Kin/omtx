@@ -18,7 +18,7 @@ export function TypeBadge({ type }: { type: Source["type"] }) {
 function isBridged(s: Source, state: ServerState): boolean {
   return state.bridges.some((b) =>
     s.type === "omt"
-      ? b.kind === "out" && b.source === s.name
+      ? b.kind === "out" && (b.source === s.name || (b.source === "*" && !!s.local))
       : b.kind === "in" && (b.source === s.name || b.source === "*"),
   );
 }

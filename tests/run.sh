@@ -33,5 +33,9 @@ docker rm -f omtx-phone >/dev/null 2>&1
 docker run -d --name omtx-phone --hostname PHONE1 --network omtx-net -v $L:/dist:ro -v $T:/t:ro omtx-test-env timeout 60 /t/phone.sh >/dev/null
 docker run --rm --hostname VMIXPC --network omtx-net $M omtx-test-env timeout 50 /t/vmixpc.sh | grep -v cuvid
 docker rm -f omtx-phone >/dev/null
+echo "== automatic bridges (idle until watched, both directions)"
+docker run -d --name omtx-phone --hostname PHONE1 --network omtx-net -v $L:/dist:ro -v $T:/t:ro omtx-test-env bash -c "source /t/mdns.sh; omtx bars --omtx --name Camera --size 1280x720 --fps 30 2>&1" >/dev/null
+docker run --rm --hostname VMIXPC --network omtx-net -v $L:/dist:ro -v $T:/t:ro omtx-test-env timeout 60 /t/auto.sh 2>&1 | grep -E "^===|^  " | grep -v "ui log"
+docker rm -f omtx-phone >/dev/null
 echo "== Windows build under Wine"
 docker run --rm -v $W:/win:ro -v $T:/t:ro omtx-wine timeout 120 /t/wine-chain.sh 2>&1 | grep -E "^\[|^---"

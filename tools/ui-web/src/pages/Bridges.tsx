@@ -4,10 +4,14 @@ import * as f from "../format";
 
 const STATE_LABEL: Record<Bridge["state"], string> = {
   starting: "Starting",
+  idle: "Idle",
   waiting: "Waiting",
   running: "Running",
   error: "Error",
+  stopped: "Stopped",
 };
+
+const EVERY: Record<Bridge["kind"], string> = { out: "Every OMT source on this PC", in: "Every omtx source" };
 
 /** Per-frame time as a bar against the frame interval: a full bar means no headroom left. */
 function Timing({ label, value, budget }: { label: string; value?: number | null; budget: number | null }) {
@@ -83,7 +87,7 @@ function BridgeCard({ b }: { b: Bridge }) {
       setBusy(false);
     }
   };
-  const from = b.source === "*" ? "Every omtx source" : b.source;
+  const from = b.source === "*" ? EVERY[b.kind] : b.source;
   const streams = b.streams ?? [];
   const to =
     b.source === "*"
@@ -127,6 +131,7 @@ function BridgeCard({ b }: { b: Bridge }) {
           {streams.map((s) => (
             <li key={s.publishedAs || s.source} className="stream">
               <div className="route small">
+                {s.stats?.state ? <span className={`pill ${s.stats.state}`}>{STATE_LABEL[s.stats.state] ?? s.stats.state}</span> : null}
                 <span className="route-from">{s.source}</span>
                 <span className="route-arrow" aria-hidden="true">
                   →
@@ -153,7 +158,7 @@ function NewBridge({ state }: { state: ServerState }) {
   const options = state.sources
     .filter((s) => s.type === (kind === "out" ? "omt" : "omtx"))
     .sort((a, b) => a.name.localeCompare(b.name));
-  const values = [...(kind === "in" ? ["*"] : []), ...options.map((s) => s.name)];
+  const values = ["*", ...options.map((s) => s.name)];
 
   // Keep the selection valid as sources come and go or the kind changes.
   useEffect(() => {
@@ -199,8 +204,7 @@ function NewBridge({ state }: { state: ServerState }) {
       <label className="field">
         <span>Source</span>
         <select value={source} onChange={(e) => setSource(e.target.value)} disabled={!values.length}>
-          {!values.length ? <option value="">{kind === "out" ? "No OMT sources" : "No omtx sources"}</option> : null}
-          {kind === "in" ? <option value="*">Every omtx source</option> : null}
+          <option value="*">{EVERY[kind]}</option>
           {options.map((s) => (
             <option key={s.id} value={s.name}>
               {s.name}

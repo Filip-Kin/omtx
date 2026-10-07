@@ -20,6 +20,7 @@ internal sealed class StreamStats
     public long? TargetKbps;
     public double? MsReceive, MsConvert, MsEncode;
     public int AudioRate, AudioChannels;
+    public volatile string State;        // per stream inside an "every source" bridge
 
     static long Now => Stopwatch.GetTimestamp() * 1000 / Stopwatch.Frequency;
 
@@ -44,6 +45,9 @@ internal sealed class StreamStats
             MsEncode = Smooth(MsEncode, encode);
         }
     }
+
+    /// <summary>Nothing flowing (bridge waiting for a viewer): drop the stale per-frame times.</summary>
+    public void Idle() { lock (sync) { MsReceive = MsConvert = MsEncode = null; } }
 
     static double Smooth(double? old, double v) => old is double o ? o * 0.9 + v * 0.1 : v;
 
@@ -78,6 +82,7 @@ internal sealed class StreamStats
         lock (sync)
         {
             w.WriteStartObject();
+            if (State != null) w.WriteString("state", State);
             w.WriteNumber("fps", Math.Round(fps, 1));
             w.WriteNumber("mbps", Math.Round(mbps, 2));
             if (Width > 0) { w.WriteNumber("width", Width); w.WriteNumber("height", Height); }

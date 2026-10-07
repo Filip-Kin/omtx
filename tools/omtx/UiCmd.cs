@@ -42,6 +42,20 @@ internal static class UiCmd
         if (!a.Has("--no-open")) OpenBrowser(url);
 
         new Thread(Janitor) { IsBackground = true, Name = "monitor janitor" }.Start();
+        // Both directions by default: this PC's OMT outputs as omtx, every omtx source as OMT here.
+        // Each stream connects upstream only while something watches it, so idle ones cost nothing.
+        if (!a.Has("--no-auto"))
+        {
+            lock (bridgesLock)
+            {
+                foreach (var b in new Bridge[] { AllBridge.Out(name => new OutOptions { Source = name }), AllBridge.In(decoderList) })
+                {
+                    b.Id = "b" + nextBridge++;
+                    bridges.Add(b);
+                    b.Start();
+                }
+            }
+        }
         while (Program.Running)
         {
             TcpClient c;
@@ -294,7 +308,7 @@ internal static class UiCmd
                 w.WriteEndArray();
                 w.WriteString("state", b.State);
                 if (b.Error != null) w.WriteString("error", b.Error); else w.WriteNull("error");
-                if (b is InAllBridge)
+                if (b is AllBridge)
                 {
                     w.WriteNull("stats");
                 }
@@ -498,15 +512,19 @@ internal static class UiCmd
             { Send(s, 409, "application/json", Json(w => w.WriteString("error", "Already running"))); return; }
             if (kind == "out")
             {
-                var o = new OutOptions { Source = source };
-                if (root.TryGetProperty("bitrateKbps", out var br) && br.TryGetInt32(out int kbps) && kbps >= 500) o.CeilingBps = kbps * 1000L;
-                o.FloorBps = Math.Min(o.FloorBps, o.CeilingBps);
-                if (root.TryGetProperty("codec", out var cd) && cd.GetString() is "hevc" or "h265") o.Hevc = true;
-                b = new OutBridge(o);
+                long ceiling = root.TryGetProperty("bitrateKbps", out var br) && br.TryGetInt32(out int kbps) && kbps >= 500 ? kbps * 1000L : 10_000_000;
+                bool hevc = root.TryGetProperty("codec", out var cd) && cd.GetString() is "hevc" or "h265";
+                OutOptions Options(string src)
+                {
+                    var o = new OutOptions { Source = src, CeilingBps = ceiling, Hevc = hevc };
+                    o.FloorBps = Math.Min(o.FloorBps, o.CeilingBps);
+                    return o;
+                }
+                b = source == "*" ? AllBridge.Out(Options) : new OutBridge(Options(source));
             }
             else
             {
-                b = source == "*" ? new InAllBridge(decoderList) : new InBridge(source, decoderList);
+                b = source == "*" ? AllBridge.In(decoderList) : new InBridge(source, decoderList);
             }
             b.Id = "b" + nextBridge++;
             bridges.Add(b);

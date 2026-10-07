@@ -4,7 +4,7 @@ namespace Omtx;
 
 /// <summary>
 /// omtx in: omtx sources (phones) -> decoder -> stock OMT senders that vMix and OBS can add.
-/// Tally from vMix goes back to the phone. The work is in InBridge / InAllBridge (shared with omtx ui).
+/// Tally from vMix goes back to the phone. The work is in InBridge / AllBridge (shared with omtx ui).
 /// </summary>
 internal static class InCmd
 {
@@ -15,7 +15,7 @@ internal static class InCmd
         string decoderList = a.Get("--decoder");
         var bridges = new List<Bridge>();
         if (a.Positional.Count > 0) foreach (var s in a.Positional) bridges.Add(new InBridge(s, decoderList));
-        else bridges.Add(new InAllBridge(decoderList));
+        else bridges.Add(AllBridge.In(decoderList));
         foreach (var b in bridges) b.Start();
 
         int tick = 0;

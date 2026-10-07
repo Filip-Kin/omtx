@@ -41,6 +41,13 @@ internal abstract class Bridge
     public abstract IEnumerable<(string source, string publishedAs, StreamStats stats)> Streams();
 
     public static Action<string> Log = s => Console.Error.WriteLine(s);
+
+    /// <summary>Stock OMT names this process publishes (in bridges), so the automatic out bridge
+    /// never re-encodes them back to omtx.</summary>
+    public static readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> PublishedStock = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Seconds a bridge stays connected upstream after its last viewer leaves.</summary>
+    protected const int IdleSeconds = 5;
 }
 
 internal sealed class OutOptions
@@ -76,7 +83,7 @@ internal sealed class OutBridge : Bridge
         Stats.TargetKbps = o.CeilingBps / 1000;
     }
 
-    public override IEnumerable<(string, string, StreamStats)> Streams() { yield return (Source, PublishedAs, Stats); }
+    public override IEnumerable<(string, string, StreamStats)> Streams() { Stats.State = State; yield return (Source, PublishedAs, Stats); }
 
     // A frame waiting for the encoder: a private copy of the picture plus what the encoder needs.
     private sealed class Job
@@ -95,11 +102,13 @@ internal sealed class OutBridge : Bridge
     {
         string source = Program.NormaliseAddress(Source);
         var preferred = o.Bgra ? OMTPreferredVideoFormat.BGRA : OMTPreferredVideoFormat.UYVYorBGRA;
-        using var recv = new OMTReceive(source, OMTFrameType.Video | OMTFrameType.Audio, preferred, OMTReceiveFlags.None);
         using var send = new OMTSend(PublishedAs, OMTQuality.Default, OMTAddress.SERVICE_TYPE_OMTX);
         send.SetSenderInformation(new OMTSenderInfo("omtx out", "omtx", Program.Version));
         Log($"omtx out: {Source} -> \"{PublishedAs}\" ({OMTAddress.SERVICE_TYPE_OMTX}, {(o.Hevc ? "HEVC" : "H.264")}{(o.Bgra ? ", BGRA to the encoder" : "")})");
-        State = "waiting";
+        State = "idle";
+        // Connected to the source only while someone watches the omtx side: no VMX decode otherwise
+        OMTReceive recv = null;
+        var lastViewer = Stopwatch.StartNew();
         Stats.Codec = o.Hevc ? "HEVC" : "H264";
 
         var queue = new System.Collections.Concurrent.BlockingCollection<Job>(new System.Collections.Concurrent.ConcurrentQueue<Job>());
@@ -121,6 +130,21 @@ internal sealed class OutBridge : Bridge
             while (Live)
             {
                 if (encodeError != null) throw encodeError;
+                Stats.Receivers = send.Connections;
+                if (send.Connections > 0) lastViewer.Restart();
+                if (recv == null)
+                {
+                    if (send.Connections == 0) { Stats.Idle(); Thread.Sleep(100); continue; }
+                    recv = new OMTReceive(source, OMTFrameType.Video | OMTFrameType.Audio, preferred, OMTReceiveFlags.None);
+                    State = "waiting"; seenVideo = false; waitTimer.Restart();
+                    Log($"omtx out: {PublishedAs}: viewer connected, receiving {Source}");
+                }
+                else if (lastViewer.Elapsed.TotalSeconds >= IdleSeconds)
+                {
+                    recv.Dispose(); recv = null; State = "idle";
+                    Log($"omtx out: {PublishedAs}: no viewers, released {Source}");
+                    continue;
+                }
                 long tr = Stopwatch.GetTimestamp();
                 bool got = recv.Receive(OMTFrameType.Video | OMTFrameType.Audio, 200, ref frame);
                 double recvMs = (Stopwatch.GetTimestamp() - tr) * 1000.0 / Stopwatch.Frequency;
@@ -166,6 +190,7 @@ internal sealed class OutBridge : Bridge
         }
         finally
         {
+            recv?.Dispose();
             queue.CompleteAdding();
             encoder.Join(3000);
             while (queue.TryTake(out var j)) pool.Add(j);
@@ -184,8 +209,16 @@ internal sealed class OutBridge : Bridge
         int fpsN = 0, fpsD = 1;
         try
         {
-            foreach (var job in queue.GetConsumingEnumerable())
+            var lastJob = Stopwatch.StartNew();
+            while (!queue.IsCompleted)
             {
+                if (!queue.TryTake(out var job, 500))
+                {
+                    // Idle: give the encoder back (an NVENC session is a limited resource on GeForce cards)
+                    if (enc != null && lastJob.Elapsed.TotalSeconds >= IdleSeconds) { enc.Dispose(); enc = null; fpsN = 0; }
+                    continue;
+                }
+                lastJob.Restart();
                 try
                 {
                     if (enc == null || enc.Width != job.Width || enc.Height != job.Height || job.FpsN != fpsN || job.FpsD != fpsD)
@@ -263,15 +296,19 @@ internal sealed class InBridge : Bridge
             PublishedAs = source.Substring(0, open).Trim() + " " + source.Substring(open + 1, source.Length - open - 2);
     }
 
-    public override IEnumerable<(string, string, StreamStats)> Streams() { yield return (Source, PublishedAs, Stats); }
+    public override IEnumerable<(string, string, StreamStats)> Streams() { Stats.State = State; yield return (Source, PublishedAs, Stats); }
 
     protected override void Run()
     {
         Log($"omtx in: {Source} -> \"{PublishedAs}\"");
-        using var recv = new OMTReceive(Program.NormaliseAddress(Source), OMTFrameType.Video | OMTFrameType.Audio, OMTPreferredVideoFormat.UYVY, OMTReceiveFlags.None);
+        PublishedStock[PublishedAs] = 0;
         using var send = new OMTSend(PublishedAs, OMTQuality.Default);
         send.SetSenderInformation(new OMTSenderInfo("omtx in", "omtx", Program.Version));
-        State = "waiting";
+        State = "idle";
+        // Connected to the camera only while something (vMix) has the stock OMT source open: no
+        // decode, no VMX encode, and the phone can stop encoding, when nobody uses it
+        OMTReceive recv = null;
+        var lastViewer = Stopwatch.StartNew();
 
         VideoDecoder dec = null;
         int decCodec = 0;
@@ -285,13 +322,27 @@ internal sealed class InBridge : Bridge
         {
             while (Live)
             {
+                Stats.Receivers = send.Connections;
+                if (send.Connections > 0) lastViewer.Restart();
+                if (recv == null)
+                {
+                    if (send.Connections == 0) { Stats.Idle(); Thread.Sleep(100); continue; }
+                    recv = new OMTReceive(Program.NormaliseAddress(Source), OMTFrameType.Video | OMTFrameType.Audio, OMTPreferredVideoFormat.UYVY, OMTReceiveFlags.None);
+                    lastTally = new OMTTally(-1, -1); State = "waiting";
+                    Log($"omtx in: {PublishedAs}: viewer connected, receiving {Source}");
+                }
+                else if (lastViewer.Elapsed.TotalSeconds >= IdleSeconds)
+                {
+                    recv.Dispose(); recv = null; State = "idle";
+                    Log($"omtx in: {PublishedAs}: no viewers, released {Source}");
+                    continue;
+                }
                 send.GetTally(0, ref tally);
                 if (tally.Preview != lastTally.Preview || tally.Program != lastTally.Program)
                 {
                     recv.SetTally(tally); // vMix tally back to the phone
                     lastTally = tally;
                 }
-                Stats.Receivers = send.Connections;
                 long tr = Stopwatch.GetTimestamp();
                 if (!recv.Receive(OMTFrameType.Video | OMTFrameType.Audio, 100, ref frame)) continue;
                 double recvMs = (Stopwatch.GetTimestamp() - tr) * 1000.0 / Stopwatch.Frequency;
@@ -356,31 +407,50 @@ internal sealed class InBridge : Bridge
         }
         finally
         {
+            recv?.Dispose();
             dec?.Dispose();
+            PublishedStock.TryRemove(PublishedAs, out _);
         }
     }
 }
 
-/// <summary>Bridges every omtx source that appears on the network (not this PC's own).</summary>
-internal sealed class InAllBridge : Bridge
+/// <summary>
+/// One bridge per matching source, added as sources appear. "in *": every omtx source on the network
+/// (not this PC's own) into stock OMT. "out *": every stock OMT source on this PC (not the ones this
+/// process publishes) out as omtx. Each one only works while it has a viewer (see IdleSeconds).
+/// </summary>
+internal sealed class AllBridge : Bridge
 {
-    private readonly string decoderList;
-    private readonly Dictionary<string, InBridge> bridges = new();
-    public override string Kind => "in";
+    private readonly string kind;
+    private readonly Func<OMTAddress, bool> wanted;
+    private readonly Func<string, Bridge> make;
+    private readonly Dictionary<string, Bridge> bridges = new();
+    public override string Kind => kind;
 
-    public InAllBridge(string decoders) { decoderList = decoders; Source = "*"; }
+    private AllBridge(string kind, Func<OMTAddress, bool> wanted, Func<string, Bridge> make)
+    {
+        this.kind = kind; this.wanted = wanted; this.make = make; Source = "*";
+    }
+
+    public static AllBridge In(string decoders) => new("in",
+        s => s.ServiceType == OMTAddress.SERVICE_TYPE_OMTX && !InCmd.IsOwnMachine(s),
+        name => new InBridge(name, decoders));
+
+    public static AllBridge Out(Func<string, OutOptions> options) => new("out",
+        s => s.ServiceType == OMTAddress.SERVICE_TYPE_OMT && InCmd.IsOwnMachine(s) && !PublishedStock.ContainsKey(s.Name),
+        name => new OutBridge(options(name)));
 
     public override IEnumerable<(string, string, StreamStats)> Streams()
     {
-        InBridge[] list;
+        Bridge[] list;
         lock (bridges) list = bridges.Values.ToArray();
-        foreach (var b in list) yield return (b.Source, b.PublishedAs, b.Stats);
+        foreach (var b in list) foreach (var st in b.Streams()) yield return st;
     }
 
     protected override void Run()
     {
         var discovery = OMTDiscovery.GetInstance();
-        Log("omtx in: bridging every omtx source on the network");
+        Log(kind == "in" ? "omtx in: bridging every omtx source on the network" : "omtx out: bridging every OMT source on this PC");
         State = "running";
         try
         {
@@ -388,12 +458,12 @@ internal sealed class InAllBridge : Bridge
             {
                 foreach (var s in discovery.GetSources())
                 {
-                    if (s.ServiceType != OMTAddress.SERVICE_TYPE_OMTX || InCmd.IsOwnMachine(s)) continue;
+                    if (!wanted(s)) continue;
                     string name = s.ToString();
                     lock (bridges)
                     {
                         if (bridges.TryGetValue(name, out var old) && !old.Finished) continue;
-                        var b = new InBridge(name, decoderList);
+                        var b = make(name);
                         bridges[name] = b;
                         b.Start();
                     }
@@ -403,7 +473,7 @@ internal sealed class InAllBridge : Bridge
         }
         finally
         {
-            InBridge[] list;
+            Bridge[] list;
             lock (bridges) list = bridges.Values.ToArray();
             foreach (var b in list) b.Stop();
         }

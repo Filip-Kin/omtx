@@ -8,6 +8,8 @@ export interface Audio {
 }
 
 export interface Stats {
+  /** per stream: "idle" while nothing watches it */
+  state?: BridgeState | null;
   fps?: number | null;
   mbps?: number | null;
   width?: number | null;
@@ -43,7 +45,7 @@ export interface BridgeStream {
   stats?: Stats | null;
 }
 
-export type BridgeState = "starting" | "waiting" | "running" | "error";
+export type BridgeState = "starting" | "idle" | "waiting" | "running" | "error" | "stopped";
 
 export interface Bridge {
   id: string;
