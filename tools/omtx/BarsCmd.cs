@@ -109,7 +109,8 @@ internal static class BarsCmd
     }
 
     // 75% bars (UYVY, BT.709), a white box moving left to right, and a bottom strip holding the
-    // low 16 bits of the monotonic clock in ms (bit 15 on the left), for glass-to-glass latency checks
+    // low 16 bits of the wall clock (Unix ms, bit 15 on the left), for glass-to-glass latency checks
+    // across machines whose clocks are NTP-synced
     static readonly (byte y, byte u, byte v)[] Bars =
     {
         (180, 128, 128), (168, 44, 136), (145, 147, 44), (133, 63, 52),
@@ -123,7 +124,7 @@ internal static class BarsCmd
         byte* p = (byte*)pic;
         int box = h / 6;
         int bx = (int)(n * 8 % Math.Max(1, w - box)) & ~1;
-        long clock = Environment.TickCount64 & 0xFFFF;
+        long clock = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() & 0xFFFF; // wall clock: comparable across machines
         int by = h / 2 - box / 2;
         for (int y = 0; y < h; y++)
         {

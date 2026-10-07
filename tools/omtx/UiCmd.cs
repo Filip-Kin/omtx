@@ -257,6 +257,7 @@ internal static class UiCmd
     {
         w.WriteString("host", OMTAddress.SanitizeName(Environment.MachineName));
         w.WriteString("version", Program.Version);
+        w.WriteNumber("now", DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()); // lets a client measure clock offset
         string me = OMTAddress.SanitizeName(Environment.MachineName);
         w.WriteStartArray("sources");
         foreach (var src in Sources())

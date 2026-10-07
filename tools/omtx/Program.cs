@@ -32,7 +32,7 @@ internal static class Program
 
   omtx bars [--name NAME] [--size WxH] [--fps N] [--omtx] [--noise] [--encoder LIST] [--ffmpeg DIR]
       Test pattern with a tone. Stock OMT (VMX) by default, omtx H.264 with --omtx. The bottom
-      strip is the monotonic clock in ms (16 bits) for latency checks; --noise fills the top third.
+      strip is the wall clock in ms (16 bits) for latency checks; --noise fills the top third.
 ";
 
     static int Main(string[] args)

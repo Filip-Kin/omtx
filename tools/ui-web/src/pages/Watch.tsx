@@ -95,9 +95,21 @@ function StreamPreview({ id, onFallback }: { id: string; onFallback: () => void 
   useEffect(() => {
     let stop = false;
     const ac = new AbortController();
+    let conn: AbortController | null = null;  // the current stream request
+    let resyncing = false;
     let dec: VideoDecoder | null = null;
     let decCodec = 0;
     let needKey = true;
+    // omtx sends keyframes only on request; a new connection gets one at once. So whenever the
+    // decoder needs a fresh start (error, a backlog it cannot clear), reopen the stream instead of
+    // waiting for a keyframe that would never come.
+    const resync = () => {
+      needKey = true;
+      resyncing = true;
+      try { dec?.close(); } catch { /* closed */ }
+      dec = null;
+      conn?.abort();
+    };
     const draw = (frame: VideoFrame) => {
       const c = canvas.current;
       if (c) {
@@ -116,7 +128,7 @@ function StreamPreview({ id, onFallback }: { id: string; onFallback: () => void 
         try {
           if ((await VideoDecoder.isConfigSupported(config)).supported) {
             dec?.close();
-            dec = new VideoDecoder({ output: draw, error: () => { dec = null; needKey = true; } });
+            dec = new VideoDecoder({ output: draw, error: () => resync() });
             dec.configure(config);
             decCodec = codec;
             return true;
@@ -137,16 +149,20 @@ function StreamPreview({ id, onFallback }: { id: string; onFallback: () => void 
         needKey = false;
       }
       if (needKey && !key) return;
-      // Falling behind: drop to the next keyframe instead of building a delay.
-      if (dec!.decodeQueueSize > 6 && !key) { needKey = true; return; }
+      // About a second behind: start again from a fresh keyframe rather than show old pictures.
+      if (dec!.decodeQueueSize > 60) { resync(); return; }
       needKey = false;
       dec!.decode(new EncodedVideoChunk({ type: key ? "key" : "delta", timestamp: ts, data: au }));
     };
     const run = async () => {
       while (!stop) {
-        setStatus("loading");
+        if (!resyncing) setStatus("loading");
+        resyncing = false;
+        conn = new AbortController();
+        const onStop = () => conn?.abort();
+        ac.signal.addEventListener("abort", onStop, { once: true });
         try {
-          const res = await fetch(`api/stream/${encodeURIComponent(id)}`, { signal: ac.signal, cache: "no-store" });
+          const res = await fetch(`api/stream/${encodeURIComponent(id)}`, { signal: conn.signal, cache: "no-store" });
           if (!res.ok || !res.body) throw new Error(String(res.status));
           const reader = res.body.getReader();
           let buf = new Uint8Array(0);
@@ -168,7 +184,10 @@ function StreamPreview({ id, onFallback }: { id: string; onFallback: () => void 
           }
         } catch {
           if (stop) return;
+        } finally {
+          ac.signal.removeEventListener("abort", onStop);
         }
+        if (resyncing) continue; // immediate reconnect, no "No signal"
         setStatus("lost");
         needKey = true;
         await new Promise((r) => setTimeout(r, 2000));
