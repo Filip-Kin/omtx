@@ -175,7 +175,7 @@ internal sealed class SourceMonitor
                     {
                         dec?.Dispose();
                         bool hevc = frame.Codec == (int)OMTCodec.HEVC;
-                        dec = new VideoDecoder(hevc ? new[] { "hevc" } : new[] { "h264" });
+                        dec = new VideoDecoder(hevc ? new[] { "hevc" } : new[] { "h264" }, lowLatency: false);
                         decCodec = frame.Codec;
                         Stats.Decoder = dec.Name;
                     }

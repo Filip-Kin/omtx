@@ -51,6 +51,7 @@ internal sealed class OutOptions
     public string[] Encoders;
     public long CeilingBps = 10_000_000, FloorBps = 3_000_000;
     public bool IntraRefresh;
+    public bool Bgra;                     // ask for BGRA and give it to the GPU encoder (no CPU conversion)
     public double VbvFrames = 1.0;
     public List<(string, string)> EncoderOptions = new();
 }
@@ -68,44 +69,65 @@ internal sealed class OutBridge : Bridge
         o = options;
         Source = options.Source;
         PublishedAs = options.Name ?? OutCmd.DefaultName(options.Source);
-        o.Encoders ??= o.Hevc ? new[] { "hevc_nvenc", "hevc_qsv", "hevc_amf", "libx265" } : new[] { "h264_nvenc", "h264_qsv", "h264_amf", "libx264" };
+        // x264 before AMF: through FFmpeg 8.1, AMF spends ~30 ms per 1080p frame copying it from system
+        // memory to the GPU (measured on an RX 7900 XT, 2026-10-07), so it tops out near 30 fps, while
+        // x264 on the same laptop does 60 fps at ~3 ms. NVENC and QSV stay first.
+        o.Encoders ??= o.Hevc ? new[] { "hevc_nvenc", "hevc_qsv", "libx265", "hevc_amf" } : new[] { "h264_nvenc", "h264_qsv", "libx264", "h264_amf" };
         Stats.TargetKbps = o.CeilingBps / 1000;
     }
 
     public override IEnumerable<(string, string, StreamStats)> Streams() { yield return (Source, PublishedAs, Stats); }
 
+    // A frame waiting for the encoder: a private copy of the picture plus what the encoder needs.
+    private sealed class Job
+    {
+        public IntPtr Data; public int Size, Stride, Width, Height, Fmt, FpsN, FpsD;
+        public float Aspect; public OMTColorSpace ColorSpace; public long Timestamp; public double RecvMs;
+    }
+
+    /// <summary>
+    /// Two threads: this one receives (libomtnet decodes VMX inside Receive), copies the picture and
+    /// queues it; the encode thread converts, encodes and sends. Their times overlap instead of adding
+    /// up. The queue holds two frames; when the encoder falls behind the oldest is dropped, so delay
+    /// never builds.
+    /// </summary>
     protected override void Run()
     {
         string source = Program.NormaliseAddress(Source);
-        using var recv = new OMTReceive(source, OMTFrameType.Video | OMTFrameType.Audio, OMTPreferredVideoFormat.UYVYorBGRA, OMTReceiveFlags.None);
+        var preferred = o.Bgra ? OMTPreferredVideoFormat.BGRA : OMTPreferredVideoFormat.UYVYorBGRA;
+        using var recv = new OMTReceive(source, OMTFrameType.Video | OMTFrameType.Audio, preferred, OMTReceiveFlags.None);
         using var send = new OMTSend(PublishedAs, OMTQuality.Default, OMTAddress.SERVICE_TYPE_OMTX);
         send.SetSenderInformation(new OMTSenderInfo("omtx out", "omtx", Program.Version));
-        Log($"omtx out: {Source} -> \"{PublishedAs}\" ({OMTAddress.SERVICE_TYPE_OMTX}, {(o.Hevc ? "HEVC" : "H.264")})");
+        Log($"omtx out: {Source} -> \"{PublishedAs}\" ({OMTAddress.SERVICE_TYPE_OMTX}, {(o.Hevc ? "HEVC" : "H.264")}{(o.Bgra ? ", BGRA to the encoder" : "")})");
         State = "waiting";
-
-        var rc = new RateControl(o.FloorBps, o.CeilingBps, o.CeilingBps);
-        var annexB = new AnnexB(o.Hevc);
-        var sent = new RateMeter();
-        VideoEncoder enc = null;
-        var frame = new OMTMediaFrame();
-        var outFrame = new OMTMediaFrame();
-        var waitTimer = Stopwatch.StartNew();
-        int srcFpsN = 0, srcFpsD = 1;
-        float aspect = 16f / 9f;
-        OMTColorSpace colorSpace = OMTColorSpace.BT709;
         Stats.Codec = o.Hevc ? "HEVC" : "H264";
 
+        var queue = new System.Collections.Concurrent.BlockingCollection<Job>(new System.Collections.Concurrent.ConcurrentQueue<Job>());
+        var pool = new System.Collections.Concurrent.ConcurrentBag<Job>();
+        long late = 0;
+        Exception encodeError = null;
+        var encoder = new Thread(() =>
+        {
+            try { EncodeLoop(queue, pool, send); }
+            catch (Exception ex) { encodeError = ex; }
+        }) { IsBackground = true, Name = "encode " + Source };
+        encoder.Start();
+
+        var frame = new OMTMediaFrame();
+        var waitTimer = Stopwatch.StartNew();
+        bool seenVideo = false;
         try
         {
             while (Live)
             {
+                if (encodeError != null) throw encodeError;
                 long tr = Stopwatch.GetTimestamp();
                 bool got = recv.Receive(OMTFrameType.Video | OMTFrameType.Audio, 200, ref frame);
                 double recvMs = (Stopwatch.GetTimestamp() - tr) * 1000.0 / Stopwatch.Frequency;
                 Stats.Receivers = send.Connections;
                 if (!got)
                 {
-                    if (enc == null && waitTimer.ElapsedMilliseconds >= 10000)
+                    if (!seenVideo && waitTimer.ElapsedMilliseconds >= 10000)
                     {
                         Log($"omtx out: no video from {Source} yet");
                         waitTimer.Restart();
@@ -121,65 +143,98 @@ internal sealed class OutBridge : Bridge
                 if (frame.Type != OMTFrameType.Video) continue;
                 int fmt = Program.AvFormatOf(frame.Codec);
                 if (fmt < 0) continue;
+                seenVideo = true;
                 Stats.Width = frame.Width; Stats.Height = frame.Height;
                 Stats.FrameRate = $"{frame.FrameRateN}/{frame.FrameRateD}";
-                if (send.Connections == 0)
+                if (send.Connections == 0) { State = "running"; continue; } // nobody watching: skip the encoder
+
+                int size = frame.Stride * frame.Height;
+                if (!pool.TryTake(out var job) || job.Size < size)
                 {
-                    // Nobody watching: skip the encoder. The first subscriber asks for a keyframe anyway.
-                    State = "running";
-                    continue;
+                    if (job != null) Marshal.FreeHGlobal(job.Data);
+                    job = new Job { Data = Marshal.AllocHGlobal(size), Size = size };
                 }
+                unsafe { Buffer.MemoryCopy((void*)frame.Data, (void*)job.Data, job.Size, size); }
+                job.Stride = frame.Stride; job.Width = frame.Width; job.Height = frame.Height; job.Fmt = fmt;
+                job.FpsN = frame.FrameRateN > 0 ? frame.FrameRateN : 30; job.FpsD = frame.FrameRateD > 0 ? frame.FrameRateD : 1;
+                job.Aspect = frame.AspectRatio > 0 ? frame.AspectRatio : (float)frame.Width / frame.Height;
+                job.ColorSpace = frame.ColorSpace; job.Timestamp = frame.Timestamp; job.RecvMs = recvMs;
+                queue.Add(job);
+                while (queue.Count > 2 && queue.TryTake(out var old)) { pool.Add(old); late++; }
+                Stats.Drops = send.GetCongestionDrops() + late;
+            }
+        }
+        finally
+        {
+            queue.CompleteAdding();
+            encoder.Join(3000);
+            while (queue.TryTake(out var j)) pool.Add(j);
+            foreach (var j in pool) Marshal.FreeHGlobal(j.Data);
+        }
+    }
 
-                if (enc == null || enc.Width != frame.Width || enc.Height != frame.Height || frame.FrameRateN != srcFpsN || frame.FrameRateD != srcFpsD)
+    private void EncodeLoop(System.Collections.Concurrent.BlockingCollection<Job> queue,
+                            System.Collections.Concurrent.ConcurrentBag<Job> pool, OMTSend send)
+    {
+        var rc = new RateControl(o.FloorBps, o.CeilingBps, o.CeilingBps);
+        var annexB = new AnnexB(o.Hevc);
+        var sent = new RateMeter();
+        var outFrame = new OMTMediaFrame();
+        VideoEncoder enc = null;
+        int fpsN = 0, fpsD = 1;
+        try
+        {
+            foreach (var job in queue.GetConsumingEnumerable())
+            {
+                try
                 {
-                    enc?.Dispose();
-                    srcFpsN = frame.FrameRateN > 0 ? frame.FrameRateN : 30;
-                    srcFpsD = frame.FrameRateD > 0 ? frame.FrameRateD : 1;
-                    enc = new VideoEncoder(o.Encoders, o.Hevc, frame.Width, frame.Height, srcFpsN, srcFpsD, rc.Current, o.IntraRefresh, o.VbvFrames,
-                                           frame.ColorSpace == OMTColorSpace.BT601 || (frame.ColorSpace == OMTColorSpace.Undefined && frame.Height < 720),
-                                           o.EncoderOptions);
-                    Stats.Encoder = enc.Name;
-                    Log($"omtx out: {enc.Name} {frame.Width}x{frame.Height} {srcFpsN}/{srcFpsD} {rc.Current / 1000} kbps");
-                    send.ConsumeKeyframeRequest();
-                    aspect = frame.AspectRatio > 0 ? frame.AspectRatio : (float)frame.Width / frame.Height;
-                    colorSpace = frame.ColorSpace == OMTColorSpace.BT601 ? OMTColorSpace.BT601 : OMTColorSpace.BT709;
-                }
-                State = "running";
-
-                if (rc.Update(send.GetCongestionDrops(), send.GetMaxVideoFramesInFlight(), send.ReceiverSuggestedQuality, sent.BitsPerSecond))
-                    enc.SetRate(rc.Current);
-                Stats.TargetKbps = rc.Current / 1000;
-                Stats.Drops = send.GetCongestionDrops();
-
-                bool force = send.ConsumeKeyframeRequest();
-                int w = frame.Width, h = frame.Height;
-                enc.Encode(frame.Data, frame.Stride, w, h, fmt, frame.Timestamp, force, (buf, len, key, ts) =>
-                {
-                    // Keyframe = an IDR/IRAP NAL is present. The packet key flag is not enough: x264 with
-                    // intra refresh sets it on recovery-point frames, which a decoder cannot start on.
-                    byte[] au = annexB.Process(buf, len, out bool isKey);
-                    sent.Add(au.Length);
-                    var handle = GCHandle.Alloc(au, GCHandleType.Pinned);
-                    try
+                    if (enc == null || enc.Width != job.Width || enc.Height != job.Height || job.FpsN != fpsN || job.FpsD != fpsD)
                     {
-                        outFrame.Type = OMTFrameType.Video;
-                        outFrame.Codec = o.Hevc ? (int)OMTCodec.HEVC : (int)OMTCodec.H264;
-                        outFrame.Width = w; outFrame.Height = h;
-                        outFrame.FrameRateN = srcFpsN; outFrame.FrameRateD = srcFpsD;
-                        outFrame.AspectRatio = aspect;
-                        outFrame.ColorSpace = colorSpace;
-                        outFrame.Flags = isKey ? OMTVideoFlags.Keyframe : OMTVideoFlags.None;
-                        outFrame.Timestamp = ts;
-                        outFrame.Data = handle.AddrOfPinnedObject();
-                        outFrame.DataLength = au.Length;
-                        outFrame.FrameMetadata = IntPtr.Zero;
-                        outFrame.FrameMetadataLength = 0;
-                        send.Send(outFrame);
+                        enc?.Dispose();
+                        fpsN = job.FpsN; fpsD = job.FpsD;
+                        enc = new VideoEncoder(o.Encoders, o.Hevc, job.Width, job.Height, fpsN, fpsD, rc.Current, o.IntraRefresh, o.VbvFrames,
+                                               job.ColorSpace == OMTColorSpace.BT601 || (job.ColorSpace == OMTColorSpace.Undefined && job.Height < 720),
+                                               o.EncoderOptions, o.Bgra ? "bgr0" : "nv12");
+                        Stats.Encoder = enc.Name;
+                        Log($"omtx out: {enc.Name} {job.Width}x{job.Height} {fpsN}/{fpsD} {rc.Current / 1000} kbps");
+                        send.ConsumeKeyframeRequest();
                     }
-                    finally { handle.Free(); }
-                    Stats.Frame(au.Length, isKey);
-                });
-                Stats.Timings(recvMs, enc.LastConvertMs, enc.LastEncodeMs);
+                    State = "running";
+                    if (rc.Update(send.GetCongestionDrops(), send.GetMaxVideoFramesInFlight(), send.ReceiverSuggestedQuality, sent.BitsPerSecond))
+                        enc.SetRate(rc.Current);
+                    Stats.TargetKbps = rc.Current / 1000;
+
+                    bool force = send.ConsumeKeyframeRequest();
+                    var cs = job.ColorSpace == OMTColorSpace.BT601 ? OMTColorSpace.BT601 : OMTColorSpace.BT709;
+                    enc.Encode(job.Data, job.Stride, job.Width, job.Height, job.Fmt, job.Timestamp, force, (buf, len, key, ts) =>
+                    {
+                        // Keyframe = an IDR/IRAP NAL is present. The packet key flag is not enough: x264 with
+                        // intra refresh sets it on recovery-point frames, which a decoder cannot start on.
+                        byte[] au = annexB.Process(buf, len, out bool isKey);
+                        sent.Add(au.Length);
+                        var handle = GCHandle.Alloc(au, GCHandleType.Pinned);
+                        try
+                        {
+                            outFrame.Type = OMTFrameType.Video;
+                            outFrame.Codec = o.Hevc ? (int)OMTCodec.HEVC : (int)OMTCodec.H264;
+                            outFrame.Width = job.Width; outFrame.Height = job.Height;
+                            outFrame.FrameRateN = fpsN; outFrame.FrameRateD = fpsD;
+                            outFrame.AspectRatio = job.Aspect;
+                            outFrame.ColorSpace = cs;
+                            outFrame.Flags = isKey ? OMTVideoFlags.Keyframe : OMTVideoFlags.None;
+                            outFrame.Timestamp = ts;
+                            outFrame.Data = handle.AddrOfPinnedObject();
+                            outFrame.DataLength = au.Length;
+                            outFrame.FrameMetadata = IntPtr.Zero;
+                            outFrame.FrameMetadataLength = 0;
+                            send.Send(outFrame);
+                        }
+                        finally { handle.Free(); }
+                        Stats.Frame(au.Length, isKey);
+                    });
+                    Stats.Timings(job.RecvMs, enc.LastConvertMs, enc.LastEncodeMs);
+                }
+                finally { pool.Add(job); }
             }
         }
         finally

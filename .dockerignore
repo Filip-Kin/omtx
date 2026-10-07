@@ -6,3 +6,4 @@ tests/clips
 tests/shots
 **/bin
 **/obj
+tools/ui-web/dist

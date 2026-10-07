@@ -23,6 +23,9 @@ internal static class UiCmd
     static readonly object monitorsLock = new();
     static readonly Dictionary<(string, bool), SourceMonitor> monitors = new();
     static string decoderList;
+    // Watch pages streaming omtx frames straight to the browser (WebCodecs): stats per source
+    static readonly object relaysLock = new();
+    static readonly List<(string source, StreamStats stats)> relays = new();
     static OMTDiscovery discovery;
 
     public static int Run(Args a)
@@ -186,7 +189,7 @@ internal static class UiCmd
 
     static void Send(Stream s, int status, string type, byte[] body, string extra = "")
     {
-        string reason = status switch { 200 => "OK", 204 => "No Content", 400 => "Bad Request", 403 => "Forbidden", 404 => "Not Found", _ => "Error" };
+        string reason = status switch { 200 => "OK", 204 => "No Content", 400 => "Bad Request", 403 => "Forbidden", 404 => "Not Found", 409 => "Conflict", _ => "Error" };
         var h = Encoding.ASCII.GetBytes($"HTTP/1.1 {status} {reason}\r\nContent-Type: {type}\r\nContent-Length: {body.Length}\r\nCache-Control: no-store\r\nConnection: close\r\n{extra}\r\n");
         s.Write(h); s.Write(body); s.Flush();
     }
@@ -213,6 +216,7 @@ internal static class UiCmd
         if (req.Method == "GET" && p == "/api/state") { Send(s, 200, "application/json", State()); return; }
         if (req.Method == "GET" && p.StartsWith("/api/preview/") && p.EndsWith(".mjpg")) { Preview(req, s, p[13..^5]); return; }
         if (req.Method == "GET" && p.StartsWith("/api/snapshot/") && p.EndsWith(".jpg")) { Snapshot(req, s, p[14..^4]); return; }
+        if (req.Method == "GET" && p.StartsWith("/api/stream/")) { Stream(s, p[12..]); return; }
         if (req.Method == "POST" && p == "/api/bridges") { CreateBridge(req, s); return; }
         if (req.Method == "DELETE" && p.StartsWith("/api/bridges/")) { DeleteBridge(s, p[13..]); return; }
         if (req.Method == "GET") { Static(s, p); return; }
@@ -314,6 +318,19 @@ internal static class UiCmd
         w.WriteEndArray();
 
         w.WriteStartArray("monitors");
+        lock (relaysLock)
+        {
+            foreach (var (name, st) in relays)
+            {
+                var src = Sources().FirstOrDefault(x => x.ToString() == name);
+                if (src == null) continue;
+                w.WriteStartObject();
+                w.WriteString("sourceId", IdOf(src));
+                w.WriteBoolean("full", true);
+                w.WritePropertyName("stats"); st.Write(w);
+                w.WriteEndObject();
+            }
+        }
         lock (monitorsLock)
         {
             foreach (var kv in monitors.Where(kv => kv.Value.Alive))
@@ -333,7 +350,9 @@ internal static class UiCmd
     static void Events(NetworkStream s)
     {
         var h = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nCache-Control: no-store\r\nConnection: keep-alive\r\nX-Accel-Buffering: no\r\n\r\n");
-        s.Write(h); s.Flush();
+        s.Write(h);
+        s.Write(Encoding.ASCII.GetBytes("retry: 2000\n\n"));
+        s.Flush();
         while (Program.Running)
         {
             var body = State();
@@ -372,20 +391,86 @@ internal static class UiCmd
         const string boundary = "omtxframe";
         s.Write(Encoding.ASCII.GetBytes($"HTTP/1.1 200 OK\r\nContent-Type: multipart/x-mixed-replace; boundary={boundary}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"));
         long last = -1;
+        var lastNew = Stopwatch.StartNew();
         while (Program.Running)
         {
+            // source gone or silent: end the stream so the page shows No signal and reconnects
+            if (lastNew.ElapsedMilliseconds > 10000) return;
             m.Touch();
             var jpeg = m.Jpeg(width, out long seq);
             if (jpeg != null && seq != last)
             {
                 last = seq;
+                lastNew.Restart();
                 s.Write(Encoding.ASCII.GetBytes($"--{boundary}\r\nContent-Type: image/jpeg\r\nContent-Length: {jpeg.Length}\r\n\r\n"));
                 s.Write(jpeg);
                 s.Write(Encoding.ASCII.GetBytes("\r\n"));
                 s.Flush();
             }
             if (!m.Alive) m = Monitor(src.ToString(), omtx, true);
-            Thread.Sleep(66); // ~15 fps is enough to watch; the stats show the real rate
+            Thread.Sleep(5); // as fast as pictures arrive (each JPEG is sent once)
+        }
+    }
+
+    /// <summary>
+    /// The omtx source's H.264/HEVC access units, untouched, for the browser to decode (WebCodecs)
+    /// at the source's full frame rate. Body until close; each frame is
+    /// [u32 length][u8 codec 1=H264 2=HEVC][u8 flags bit0=keyframe][u16 0][i32 width][i32 height]
+    /// [i32 fpsN][i32 fpsD][i64 timestamp 100ns][access unit], all little-endian, length = 28 + AU.
+    /// </summary>
+    static void Stream(NetworkStream s, string id)
+    {
+        var src = FindSource(id);
+        if (src == null || src.ServiceType != OMTAddress.SERVICE_TYPE_OMTX)
+        { Send(s, 404, "text/plain", Encoding.UTF8.GetBytes("Not found")); return; }
+        s.Write(Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n"));
+        s.Flush();
+        var stats = new StreamStats();
+        var entry = (src.ToString(), stats);
+        lock (relaysLock) relays.Add(entry);
+        try
+        {
+            using var recv = new OMTReceive(Program.NormaliseAddress(src.ToString()), OMTFrameType.Video | OMTFrameType.Audio, OMTPreferredVideoFormat.UYVY, OMTReceiveFlags.None);
+            var frame = new OMTMediaFrame();
+            byte[] buf = new byte[1 << 20];
+            var silent = Stopwatch.StartNew();
+            while (Program.Running)
+            {
+                if (!recv.Receive(OMTFrameType.Video | OMTFrameType.Audio, 200, ref frame))
+                {
+                    if (silent.ElapsedMilliseconds > 10000) return; // source gone: the page reconnects
+                    continue;
+                }
+                if (frame.Type == OMTFrameType.Audio) { stats.AudioRate = frame.SampleRate; stats.AudioChannels = frame.Channels; continue; }
+                if (frame.Type != OMTFrameType.Video) continue;
+                if (frame.Codec != (int)OMTCodec.H264 && frame.Codec != (int)OMTCodec.HEVC) continue;
+                silent.Restart();
+                bool key = frame.Flags.HasFlag(OMTVideoFlags.Keyframe);
+                stats.Codec = StreamStats.CodecName(frame.Codec);
+                stats.Width = frame.Width; stats.Height = frame.Height;
+                stats.FrameRate = $"{frame.FrameRateN}/{frame.FrameRateD}";
+                stats.Drops = recv.GetVideoStatistics().FramesDropped;
+                stats.Frame(frame.DataLength, key);
+                int n = 32 + frame.DataLength;
+                if (buf.Length < n) buf = new byte[n * 2];
+                var span = buf.AsSpan();
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(span, 28 + frame.DataLength);
+                span[4] = (byte)(frame.Codec == (int)OMTCodec.HEVC ? 2 : 1);
+                span[5] = (byte)(key ? 1 : 0);
+                span[6] = 0; span[7] = 0;
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(span[8..], frame.Width);
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(span[12..], frame.Height);
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(span[16..], frame.FrameRateN);
+                System.Buffers.Binary.BinaryPrimitives.WriteInt32LittleEndian(span[20..], frame.FrameRateD);
+                System.Buffers.Binary.BinaryPrimitives.WriteInt64LittleEndian(span[24..], frame.Timestamp);
+                System.Runtime.InteropServices.Marshal.Copy(frame.Data, buf, 32, frame.DataLength);
+                s.Write(buf, 0, n);
+                s.Flush();
+            }
+        }
+        finally
+        {
+            lock (relaysLock) relays.Remove(entry);
         }
     }
 
@@ -399,6 +484,9 @@ internal static class UiCmd
         var root = doc.RootElement;
         string kind = root.TryGetProperty("kind", out var k) ? k.GetString() : null;
         string source = root.TryGetProperty("source", out var so) ? so.GetString() : null;
+        // sourceId (preferred by the page) wins over a name: two machines can announce the same name
+        if (root.TryGetProperty("sourceId", out var sid) && sid.GetString() is string idv && FindSource(idv) is OMTAddress found)
+            source = found.ToString();
         if (string.IsNullOrEmpty(source) || (kind != "out" && kind != "in"))
         { Send(s, 400, "application/json", Json(w => w.WriteString("error", "Kind and source"))); return; }
 
@@ -406,7 +494,7 @@ internal static class UiCmd
         lock (bridgesLock)
         {
             if (bridges.Any(x => x.Kind == kind && x.Source == source && x.State != "error" && x.State != "stopped"))
-            { Send(s, 400, "application/json", Json(w => w.WriteString("error", "Already running"))); return; }
+            { Send(s, 409, "application/json", Json(w => w.WriteString("error", "Already running"))); return; }
             if (kind == "out")
             {
                 var o = new OutOptions { Source = source };

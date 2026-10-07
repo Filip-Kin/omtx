@@ -15,12 +15,14 @@ internal sealed unsafe class VideoEncoder : IDisposable
     public readonly int Width, Height, FpsN, FpsD;
     private IntPtr ctx, frame, pkt, sws;
     private int swsSrcFmt = -1, swsSrcW, swsSrcH;
-    private readonly int encFmt;
+    private readonly int encFmt, nv12Fmt, uyvyFmt;
     private long pts;
     private long bitrate;
     private readonly double vbvFrames;
     private readonly bool bt601;
     private readonly IReadOnlyList<(string key, string value)> extraOptions;
+    private readonly string inputPixFmt;
+    private readonly int bgraFmt, bgr0Fmt;
     private readonly Queue<long> timestamps = new Queue<long>();
     private byte[] outBuf = new byte[1 << 20];
 
@@ -30,13 +32,16 @@ internal sealed unsafe class VideoEncoder : IDisposable
     /// <param name="encoders">Names to try in order, e.g. h264_nvenc then libx264.</param>
     public VideoEncoder(IEnumerable<string> encoders, bool hevc, int width, int height, int fpsN, int fpsD,
                         long bitrate, bool intraRefresh, double vbvFrames, bool bt601 = false,
-                        IReadOnlyList<(string key, string value)> extraOptions = null)
+                        IReadOnlyList<(string key, string value)> extraOptions = null, string inputPixFmt = "nv12")
     {
+        this.inputPixFmt = inputPixFmt;
         this.extraOptions = extraOptions ?? Array.Empty<(string, string)>();
         this.bt601 = bt601;
         Hevc = hevc; Width = width; Height = height; FpsN = fpsN; FpsD = fpsD;
         this.bitrate = bitrate; this.vbvFrames = vbvFrames;
-        encFmt = Av.PixFmt("nv12");
+        encFmt = Av.PixFmt(inputPixFmt);
+        nv12Fmt = Av.PixFmt("nv12"); uyvyFmt = Av.PixFmt("uyvy422");
+        bgraFmt = Av.PixFmt("bgra"); bgr0Fmt = Av.PixFmt("bgr0");
         var failures = new List<string>();
         foreach (var name in encoders)
         {
@@ -63,7 +68,7 @@ internal sealed unsafe class VideoEncoder : IDisposable
     private void Configure(string name, bool intraRefresh)
     {
         Must(Av.OptSet(ctx, "video_size", $"{Width}x{Height}"), "video_size");
-        Must(Av.OptSet(ctx, "pixel_format", "nv12"), "pixel_format");
+        Must(Av.OptSet(ctx, "pixel_format", inputPixFmt), "pixel_format");
         Must(Av.OptSetQ(ctx, "time_base", FpsD, FpsN), "time_base");
         Av.OptSetQ(ctx, "framerate", FpsN, FpsD); // not an option in every FFmpeg; time_base covers it
         Av.OptSetInt(ctx, "bf", 0);
@@ -143,7 +148,9 @@ internal sealed unsafe class VideoEncoder : IDisposable
     public void Encode(IntPtr src, int stride, int srcW, int srcH, int srcFmt, long timestamp, bool forceKeyframe,
                        Action<byte[], int, bool, long> onPacket)
     {
-        if (sws == IntPtr.Zero || swsSrcFmt != srcFmt || swsSrcW != srcW || swsSrcH != srcH)
+        bool same = srcW == Width && srcH == Height;
+        bool fast = same && ((srcFmt == uyvyFmt && encFmt == nv12Fmt) || (srcFmt == bgraFmt && encFmt == bgr0Fmt));
+        if (!fast && (sws == IntPtr.Zero || swsSrcFmt != srcFmt || swsSrcW != srcW || swsSrcH != srcH))
         {
             Av.SwsFree(sws);
             sws = Av.SwsGet(srcW, srcH, srcFmt, Width, Height, encFmt);
@@ -152,6 +159,19 @@ internal sealed unsafe class VideoEncoder : IDisposable
         }
         long t0 = System.Diagnostics.Stopwatch.GetTimestamp();
         Av.FrameMakeWritable(frame);
+        if (srcFmt == uyvyFmt && encFmt == nv12Fmt && srcW == Width && srcH == Height)
+        {
+            // Same size, UYVY -> NV12: all cores instead of swscale's one (10-13 ms -> ~1 ms at 1080p)
+            UyvyToNv12((byte*)src, stride, srcW, srcH, Av.FrameData(frame)[0], Av.FrameLinesize(frame)[0],
+                       Av.FrameData(frame)[1], Av.FrameLinesize(frame)[1]);
+            goto converted;
+        }
+        if (srcFmt == bgraFmt && encFmt == bgr0Fmt && srcW == Width && srcH == Height)
+        {
+            // BGRA for a GPU encoder that converts itself: a straight copy, rows in parallel
+            CopyRows((byte*)src, stride, Av.FrameData(frame)[0], Av.FrameLinesize(frame)[0], srcW * 4, srcH);
+            goto converted;
+        }
         byte** srcData = stackalloc byte*[4];
         int* srcStride = stackalloc int[4];
         srcData[0] = (byte*)src; srcData[1] = srcData[2] = srcData[3] = null;
@@ -162,6 +182,7 @@ internal sealed unsafe class VideoEncoder : IDisposable
             srcStride[1] = stride;
         }
         Av.SwsScale(sws, srcData, srcStride, srcH, Av.FrameData(frame), Av.FrameLinesize(frame));
+    converted:
         long t1 = System.Diagnostics.Stopwatch.GetTimestamp();
         LastConvertMs = (t1 - t0) * 1000.0 / System.Diagnostics.Stopwatch.Frequency;
 
@@ -192,6 +213,31 @@ internal sealed unsafe class VideoEncoder : IDisposable
         }
     }
 
+    static void CopyRows(byte* src, int srcStride, byte* dst, int dstStride, int bytes, int rows)
+    {
+        long s = (long)src, d = (long)dst;
+        Parallel.For(0, rows, r => Buffer.MemoryCopy((byte*)s + r * (long)srcStride, (byte*)d + r * (long)dstStride, bytes, bytes));
+    }
+
+    /// <summary>UYVY 4:2:2 -> NV12 4:2:0 at the same size, rows in parallel. Chroma: average of two rows.</summary>
+    static void UyvyToNv12(byte* src, int stride, int w, int h, byte* y, int ys, byte* uv, int uvs)
+    {
+        long s = (long)src, yp = (long)y, up = (long)uv;
+        Parallel.For(0, h / 2, j =>
+        {
+            byte* s0 = (byte*)s + (2 * j) * (long)stride, s1 = s0 + stride;
+            byte* y0 = (byte*)yp + (2 * j) * (long)ys, y1 = y0 + ys;
+            byte* d = (byte*)up + j * (long)uvs;
+            for (int x = 0, i = 0; x < w; x += 2, i += 4)
+            {
+                y0[x] = s0[i + 1]; y0[x + 1] = s0[i + 3];
+                y1[x] = s1[i + 1]; y1[x + 1] = s1[i + 3];
+                d[x] = (byte)((s0[i] + s1[i] + 1) >> 1);
+                d[x + 1] = (byte)((s0[i + 2] + s1[i + 2] + 1) >> 1);
+            }
+        });
+    }
+
     public void Dispose()
     {
         Av.SwsFree(sws); sws = IntPtr.Zero;
@@ -215,7 +261,9 @@ internal sealed unsafe class VideoDecoder : IDisposable
     private IntPtr outBuf = IntPtr.Zero;
     private int outSize;
 
-    public VideoDecoder(IEnumerable<string> decoders)
+    /// <param name="lowLatency">Slice threads only (no added frame of delay). False for monitors:
+    /// frame threads too, so a CPU decode keeps up with 1080p60 HEVC.</param>
+    public VideoDecoder(IEnumerable<string> decoders, bool lowLatency = true)
     {
         uyvy = Av.PixFmt("uyvy422");
         var failures = new List<string>();
@@ -225,7 +273,8 @@ internal sealed unsafe class VideoDecoder : IDisposable
             if (codec == IntPtr.Zero) { failures.Add(name + ": not in this FFmpeg"); continue; }
             ctx = Av.AllocContext(codec);
             Av.OptSet(ctx, "flags", "low_delay");
-            Av.OptSet(ctx, "thread_type", "slice");
+            Av.OptSet(ctx, "thread_type", lowLatency ? "slice" : "frame+slice");
+            Av.OptSetInt(ctx, "threads", 0);
             if (name.Contains("cuvid")) { Av.OptSetInt(ctx, "surfaces", 4); Av.OptSetInt(ctx, "delay", 0); }
             int r = Av.Open(ctx, codec);
             if (r < 0) { failures.Add(name + ": " + Av.Err(r)); Av.FreeContext(ref ctx); continue; }

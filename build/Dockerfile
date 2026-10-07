@@ -8,6 +8,14 @@
 #                  only needs `omtx play`, which uses neither libvmx nor libav.
 # dist/win-x64/    omtx.exe (self-contained single file), libvmx.dll, FFmpeg 8.1 DLLs
 
+# ---- omtx ui page (tools/ui-web), embedded into omtx by both builds below ----
+FROM oven/bun:1 AS ui
+WORKDIR /ui
+COPY tools/ui-web/package.json tools/ui-web/bun.lock ./
+RUN bun install --frozen-lockfile
+COPY tools/ui-web/ ./
+RUN bun x tsc --noEmit && rm -rf dist && bun build ./index.html --outdir dist --production --public-path ./
+
 # ---- Linux: NativeAOT on bullseye (same base as ndi-build/omt.Dockerfile) ----
 FROM debian:bullseye AS linux
 RUN printf "deb http://archive.debian.org/debian bullseye main\ndeb http://archive.debian.org/debian-security bullseye-security main\n" > /etc/apt/sources.list \
@@ -31,6 +39,7 @@ RUN git clone https://github.com/openmediatransport/libvmx.git /vmx && git -C /v
 WORKDIR /src
 COPY libomtnet/ libomtnet/
 COPY tools/ tools/
+COPY --from=ui /ui/dist/ tools/ui-web/dist/
 RUN --mount=type=cache,target=/root/.nuget/packages \
     cd tools/omtx && dotnet publish -c Release -r linux-x64 -o /tmp/pub \
  && cp /tmp/pub/omtx /out/linux-x64/omtx && strip /out/linux-x64/omtx || true
@@ -43,6 +52,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends unzip && rm -rf
 WORKDIR /src
 COPY libomtnet/ libomtnet/
 COPY tools/ tools/
+COPY --from=ui /ui/dist/ tools/ui-web/dist/
 RUN --mount=type=cache,target=/root/.nuget/packages \
     cd tools/omtx && dotnet publish -c Release -r win-x64 -o /tmp/pub \
  && mkdir -p /out/win-x64 && cp /tmp/pub/omtx.exe /out/win-x64/

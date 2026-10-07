@@ -1,0 +1,20 @@
+{
+  "name": "omtx-ui-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "./build.sh",
+    "mock": "bun mock-server.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "react": "^19.1.0",
+    "react-dom": "^19.1.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "@types/react": "^19.1.0",
+    "@types/react-dom": "^19.1.0",
+    "typescript": "^5.8.0"
+  }
+}
