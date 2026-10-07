@@ -83,7 +83,8 @@ class BitrateController(
 
     companion object {
         const val DEFAULT_FLOOR_BPS = 3_000_000
-        const val DEFAULT_CEILING_BPS = 10_000_000
+        // The Wi-Fi budget for a 1080p60 stream; congestion steps it down from here (§4.3)
+        const val DEFAULT_CEILING_BPS = 50_000_000
         const val STEP_DOWN_HOLD_MS = 1_000L
         const val STEP_UP_CALM_MS = 2_000L
     }

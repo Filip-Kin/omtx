@@ -205,15 +205,6 @@
                 android:id="@+id/codec"
                 android:layout_width="match_parent"
                 android:layout_height="wrap_content" />
-
-            <TextView
-                style="@style/FieldLabel"
-                android:text="@string/max_bitrate" />
-
-            <Spinner
-                android:id="@+id/max_bitrate"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content" />
         </LinearLayout>
     </ScrollView>
 </FrameLayout>

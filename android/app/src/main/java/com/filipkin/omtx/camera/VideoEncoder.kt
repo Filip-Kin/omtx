@@ -118,11 +118,13 @@ class VideoEncoder(
         f.setInteger(MediaFormat.KEY_COLOR_FORMAT, CodecCapabilities.COLOR_FormatSurface)
         f.setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
         f.setInteger(MediaFormat.KEY_FRAME_RATE, fps)
+        // VBR: the bitrate is a ceiling the picture may use, not a rate to fill. With the 50 Mbps
+        // ceiling, CBR would send 50 Mbps of padding for a still shot.
         val enc = caps?.encoderCapabilities
-        val cbr = enc?.isBitrateModeSupported(EncoderCapabilities.BITRATE_MODE_CBR) == true
+        val vbr = enc?.isBitrateModeSupported(EncoderCapabilities.BITRATE_MODE_VBR) != false
         f.setInteger(
             MediaFormat.KEY_BITRATE_MODE,
-            if (cbr) EncoderCapabilities.BITRATE_MODE_CBR else EncoderCapabilities.BITRATE_MODE_VBR,
+            if (vbr) EncoderCapabilities.BITRATE_MODE_VBR else EncoderCapabilities.BITRATE_MODE_CBR,
         )
         f.setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, iFrameIntervalS)
         if (minimal) return f

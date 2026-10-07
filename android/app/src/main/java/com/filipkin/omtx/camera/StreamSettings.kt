@@ -14,13 +14,10 @@ data class StreamSettings(
     val height: Int = 1080,
     val fps: Int = 30,
     val codec: VideoCodec = VideoCodec.H264,
-    val maxBitrateMbps: Int = 10,
     val facing: Facing = Facing.REAR,
     val grid: Boolean = false,
     val tallyMode: TallyMode = TallyMode.BORDER,
 ) {
-    val maxBitrateBps: Int get() = maxBitrateMbps * 1_000_000
-
     fun save(ctx: Context) {
         ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE).edit()
             .putString("sourceName", sourceName)
@@ -28,7 +25,6 @@ data class StreamSettings(
             .putInt("height", height)
             .putInt("fps", fps)
             .putString("codec", codec.name)
-            .putInt("maxBitrateMbps", maxBitrateMbps)
             .putString("facing", facing.name)
             .putBoolean("grid", grid)
             .putString("tallyMode", tallyMode.name)
@@ -40,7 +36,6 @@ data class StreamSettings(
         const val DEFAULT_SOURCE_NAME = "Camera"
         val RESOLUTIONS = listOf(1920 to 1080, 1280 to 720)
         val FRAME_RATES = listOf(30, 60)
-        val BITRATES_MBPS = listOf(4, 6, 8, 10, 12, 15, 20, 25, 30)
 
         fun load(ctx: Context): StreamSettings {
             val p = ctx.getSharedPreferences(PREFS, Context.MODE_PRIVATE)
@@ -54,7 +49,6 @@ data class StreamSettings(
                 height = res.second,
                 fps = p.getInt("fps", d.fps).takeIf { it in FRAME_RATES } ?: d.fps,
                 codec = runCatching { VideoCodec.valueOf(p.getString("codec", d.codec.name)!!) }.getOrDefault(d.codec),
-                maxBitrateMbps = p.getInt("maxBitrateMbps", d.maxBitrateMbps).takeIf { it in BITRATES_MBPS } ?: d.maxBitrateMbps,
                 facing = runCatching { Facing.valueOf(p.getString("facing", d.facing.name)!!) }.getOrDefault(d.facing),
                 grid = p.getBoolean("grid", d.grid),
                 tallyMode = runCatching { TallyMode.valueOf(p.getString("tallyMode", d.tallyMode.name)!!) }.getOrDefault(d.tallyMode),

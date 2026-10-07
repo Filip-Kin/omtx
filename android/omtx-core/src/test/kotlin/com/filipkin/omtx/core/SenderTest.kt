@@ -155,7 +155,7 @@ class SenderTest {
         waitFor { sender.ceilingBps == 4_000_000 }
         assertEquals(4_000_000, sender.targetBps)
         a.send("<OMTSettings Quality=\"Default\" />")
-        waitFor { sender.ceilingBps == 10_000_000 }
+        waitFor { sender.ceilingBps == BitrateController.DEFAULT_CEILING_BPS }
     }
 
     @Test

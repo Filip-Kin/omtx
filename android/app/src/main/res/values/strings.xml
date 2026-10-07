@@ -9,7 +9,6 @@
     <string name="resolution">Resolution</string>
     <string name="frame_rate">Frame rate</string>
     <string name="codec">Codec</string>
-    <string name="max_bitrate">Max bitrate</string>
     <string name="receivers">Receivers</string>
     <string name="port">Port</string>
     <string name="camera_permission">Camera permission</string>

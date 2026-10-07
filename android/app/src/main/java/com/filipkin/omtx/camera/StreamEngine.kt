@@ -122,7 +122,6 @@ class StreamEngine(private val ctx: Context, private val ui: Ui) {
                     main.post { onReceiversChanged() }
                 }
             },
-            userCeilingBps = s.maxBitrateBps,
             log = { Log.i(TAG, it) },
             configureSocket = ::setNotSentLowat,
         )

@@ -50,7 +50,6 @@ class MainActivity : Activity(), StreamEngine.Ui, SurfaceHolder.Callback {
     private lateinit var resolutionSpinner: Spinner
     private lateinit var fpsSpinner: Spinner
     private lateinit var codecSpinner: Spinner
-    private lateinit var bitrateSpinner: Spinner
     private lateinit var overlay: PreviewOverlay
     private lateinit var controlsColumn: View
     private lateinit var zoomButton: Button
@@ -103,7 +102,6 @@ class MainActivity : Activity(), StreamEngine.Ui, SurfaceHolder.Callback {
         resolutionSpinner = findViewById(R.id.resolution)
         fpsSpinner = findViewById(R.id.frame_rate)
         codecSpinner = findViewById(R.id.codec)
-        bitrateSpinner = findViewById(R.id.max_bitrate)
         overlay = findViewById(R.id.overlay)
         controlsColumn = findViewById(R.id.controls)
         zoomButton = findViewById(R.id.zoom)
@@ -129,7 +127,7 @@ class MainActivity : Activity(), StreamEngine.Ui, SurfaceHolder.Callback {
             if (actionId == EditorInfo.IME_ACTION_DONE) { commitSourceName(); hideKeyboard(); true } else false
         }
         sourceName.setOnFocusChangeListener { _, hasFocus -> if (!hasFocus) commitSourceName() }
-        listOf(resolutionSpinner, fpsSpinner, codecSpinner, bitrateSpinner).forEach {
+        listOf(resolutionSpinner, fpsSpinner, codecSpinner).forEach {
             it.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
                 override fun onItemSelected(p: AdapterView<*>?, v: View?, pos: Int, id: Long) { onSpinnerChanged() }
                 override fun onNothingSelected(p: AdapterView<*>?) {}
@@ -337,8 +335,6 @@ class MainActivity : Activity(), StreamEngine.Ui, SurfaceHolder.Callback {
         bind(resolutionSpinner, resolutions.map { "${it.first}x${it.second}" }, resolutions.indexOf(settings.width to settings.height))
         bind(fpsSpinner, frameRates.map { "$it ${getString(R.string.fps_unit)}" }, frameRates.indexOf(settings.fps))
         bind(codecSpinner, codecs.map { codecLabel(it) }, codecs.indexOf(settings.codec))
-        bind(bitrateSpinner, StreamSettings.BITRATES_MBPS.map { "$it ${getString(R.string.mbps_unit)}" },
-            StreamSettings.BITRATES_MBPS.indexOf(settings.maxBitrateMbps))
         populating = false
         applySettings()
     }
@@ -355,8 +351,7 @@ class MainActivity : Activity(), StreamEngine.Ui, SurfaceHolder.Callback {
         val res = resolutions.getOrNull(resolutionSpinner.selectedItemPosition) ?: return
         val fps = frameRates.getOrNull(fpsSpinner.selectedItemPosition) ?: settings.fps
         val codec = codecs.getOrNull(codecSpinner.selectedItemPosition) ?: settings.codec
-        val br = StreamSettings.BITRATES_MBPS.getOrNull(bitrateSpinner.selectedItemPosition) ?: settings.maxBitrateMbps
-        val next = settings.copy(width = res.first, height = res.second, fps = fps, codec = codec, maxBitrateMbps = br)
+        val next = settings.copy(width = res.first, height = res.second, fps = fps, codec = codec)
         if (next == settings) return
         val resChanged = next.width != settings.width || next.height != settings.height
         settings = next
